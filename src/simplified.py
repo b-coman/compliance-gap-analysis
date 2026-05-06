@@ -217,23 +217,42 @@ def _load_llm(model_id: str = LLM_MODEL_ID):
 def _call_llm(tokenizer, model, system: str, user: str,
               max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
               repetition_penalty: float = DEFAULT_REPETITION_PENALTY) -> str:
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
+    # Gemma 2 and Gemma 3 chat templates do not support a `system` role
+    # (only `user` and `model`). Passing a system message either drops it
+    # silently or produces a malformed prompt. Detect Gemma and merge the
+    # system content into the first user turn instead.
+    is_gemma = (
+        getattr(model.config, "model_type", "").lower().startswith("gemma")
+    )
+    if is_gemma:
+        messages = [
+            {"role": "user", "content": f"{system}\n\n{user}"},
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
     formatted = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
     inputs = tokenizer(formatted, return_tensors="pt").to(model.device)
+
+    # Gemma's natural stop is <end_of_turn>, not <eos>. Letting transformers
+    # use the model's generation_config (which carries the right stops) is
+    # safer than forcing eos_token_id. For Qwen, the explicit eos avoids a
+    # pad-token warning at generation time.
+    generate_kwargs = dict(
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        repetition_penalty=repetition_penalty,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+    if not is_gemma:
+        generate_kwargs["eos_token_id"] = tokenizer.eos_token_id
+
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            repetition_penalty=repetition_penalty,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+        outputs = model.generate(**inputs, **generate_kwargs)
     gen_ids = outputs[0][inputs["input_ids"].shape[1]:]
     return tokenizer.decode(gen_ids, skip_special_tokens=True)
 
