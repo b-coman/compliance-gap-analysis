@@ -189,21 +189,27 @@ def _device() -> str:
     return "cpu"
 
 
-def _load_llm(model_id: str = LLM_MODEL_ID):
-    """Load the LLM. Device-aware: CUDA → fp16, otherwise CPU → fp32.
+def _is_gemma3(model_id: str) -> bool:
+    """Family detector. Gemma 3 (4B+) is multimodal and needs a different
+    transformers class + chat-template format than the standard causal-LM
+    path used for Qwen / Mistral / Gemma 2. Detection is by model_id at load
+    time and by `model.config.model_type == "gemma3"` at call time.
+    """
+    return "gemma-3" in model_id.lower()
 
-    The CPU+fp32 fallback is also used on MPS — we hit a matmul shape bug
-    on MPS for some decoder layouts; CPU is the safe path on Apple Silicon.
+
+def _load_llm_default(model_id: str):
+    """Load via AutoModelForCausalLM. Used for Qwen, Mistral, Gemma 1/2, etc.
+
+    Device-aware: CUDA → fp16 with `device_map="auto"` (avoids the Colab T4
+    CPU-RAM OOM on 7B models — accelerate streams weights to GPU during load).
+    Otherwise CPU → fp32 (also the safe path on Apple Silicon, where MPS has
+    a matmul shape bug on some decoder layouts).
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if torch.cuda.is_available():
-        # device_map="auto" streams weights directly to GPU during load (via
-        # accelerate). Without it, transformers loads the full model into CPU
-        # RAM first then moves to GPU — fine on a workstation, but on Colab T4
-        # (~13 GB CPU RAM) loading a 7B model in fp16 (~14 GB intermediate)
-        # OOMs the kernel. device_map drops peak CPU usage to ~2-3 GB.
         model = AutoModelForCausalLM.from_pretrained(
             model_id, dtype=torch.float16, device_map="auto"
         )
@@ -214,17 +220,55 @@ def _load_llm(model_id: str = LLM_MODEL_ID):
     return tokenizer, model
 
 
-def _call_llm(tokenizer, model, system: str, user: str,
-              max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
-              repetition_penalty: float = DEFAULT_REPETITION_PENALTY) -> str:
-    # Gemma 2 and Gemma 3 chat templates do not support a `system` role
-    # (only `user` and `model`). Passing a system message either drops it
-    # silently or produces a malformed prompt. Detect Gemma and merge the
-    # system content into the first user turn instead.
-    is_gemma = (
+def _load_llm_gemma3(model_id: str):
+    """Load Gemma 3 via Gemma3ForConditionalGeneration + AutoProcessor.
+
+    Gemma 3 4B+ are multimodal models. Google's loaders expect the
+    conditional-generation class plus an `AutoProcessor` (not a plain
+    tokenizer) to handle the multimodal input format. For text-only
+    inference we use the same class but format messages with content as a
+    list of `{"type": "text", "text": ...}` dicts (see _call_llm_gemma3).
+    bfloat16 is the recommended dtype per Google's model card.
+
+    On CPU we fall back to fp32, but Gemma 3 on CPU is impractical
+    (multi-minute generation per query). Intended target is Colab GPU.
+    """
+    from transformers import Gemma3ForConditionalGeneration, AutoProcessor
+
+    processor = AutoProcessor.from_pretrained(model_id)
+    if torch.cuda.is_available():
+        model = Gemma3ForConditionalGeneration.from_pretrained(
+            model_id, dtype=torch.bfloat16, device_map="auto"
+        ).eval()
+    else:
+        model = Gemma3ForConditionalGeneration.from_pretrained(
+            model_id, dtype=torch.float32
+        ).to("cpu").eval()
+    return processor, model
+
+
+def _load_llm(model_id: str = LLM_MODEL_ID):
+    """Family dispatcher. Routes to the right loader based on model_id."""
+    if _is_gemma3(model_id):
+        return _load_llm_gemma3(model_id)
+    return _load_llm_default(model_id)
+
+
+def _call_llm_default(tokenizer, model, system: str, user: str,
+                      max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+                      repetition_penalty: float = DEFAULT_REPETITION_PENALTY) -> str:
+    """Default inference path: Qwen, Mistral, Gemma 1/2, etc.
+
+    Gemma 1 and Gemma 2 chat templates do not support a `system` role
+    (only `user` and `model`); passing one drops it silently or produces a
+    malformed prompt. Detect Gemma and merge system content into the user
+    turn. Gemma 3 has its own dedicated path (handles system natively via
+    content-list format) and never reaches this function.
+    """
+    is_gemma_legacy = (
         getattr(model.config, "model_type", "").lower().startswith("gemma")
     )
-    if is_gemma:
+    if is_gemma_legacy:
         messages = [
             {"role": "user", "content": f"{system}\n\n{user}"},
         ]
@@ -248,13 +292,69 @@ def _call_llm(tokenizer, model, system: str, user: str,
         repetition_penalty=repetition_penalty,
         pad_token_id=tokenizer.eos_token_id,
     )
-    if not is_gemma:
+    if not is_gemma_legacy:
         generate_kwargs["eos_token_id"] = tokenizer.eos_token_id
 
     with torch.no_grad():
         outputs = model.generate(**inputs, **generate_kwargs)
     gen_ids = outputs[0][inputs["input_ids"].shape[1]:]
     return tokenizer.decode(gen_ids, skip_special_tokens=True)
+
+
+def _call_llm_gemma3(processor, model, system: str, user: str,
+                     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+                     repetition_penalty: float = DEFAULT_REPETITION_PENALTY) -> str:
+    """Gemma 3 inference path.
+
+    Gemma 3's chat template expects content as a list of `{"type": "text",
+    "text": ...}` dicts (the multimodal content envelope). Plain strings
+    silently produce malformed prompts and empty generation. Uses
+    `processor.apply_chat_template` rather than `tokenizer.apply_chat_template`,
+    with `tokenize=True, return_dict=True` to get input_ids+attention_mask
+    in one call. Stop tokens are handled by the model's generation_config
+    (Gemma uses `<end_of_turn>`).
+    """
+    messages = [
+        {"role": "system", "content": [{"type": "text", "text": system}]},
+        {"role": "user", "content": [{"type": "text", "text": user}]},
+    ]
+    inputs = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(model.device)
+    input_len = inputs["input_ids"].shape[-1]
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            repetition_penalty=repetition_penalty,
+        )
+    gen_ids = outputs[0][input_len:]
+    return processor.decode(gen_ids, skip_special_tokens=True)
+
+
+def _call_llm(tokenizer_or_processor, model, system: str, user: str,
+              max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+              repetition_penalty: float = DEFAULT_REPETITION_PENALTY) -> str:
+    """Family dispatcher. Routes to the right inference path based on the
+    loaded model's `config.model_type`.
+    """
+    is_gemma3 = getattr(model.config, "model_type", "").lower() == "gemma3"
+    if is_gemma3:
+        return _call_llm_gemma3(
+            tokenizer_or_processor, model, system, user,
+            max_new_tokens=max_new_tokens,
+            repetition_penalty=repetition_penalty,
+        )
+    return _call_llm_default(
+        tokenizer_or_processor, model, system, user,
+        max_new_tokens=max_new_tokens,
+        repetition_penalty=repetition_penalty,
+    )
 
 
 # ───── Module-level state (lazy-loaded singletons) ─────
