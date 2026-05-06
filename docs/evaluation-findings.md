@@ -274,6 +274,47 @@ Each would require substantial fixing — query-intent constraint at CHN-01, τ 
 
 ---
 
+### Stage 8 — model-scale comparison on the simplified path (V4 7B Colab vs V4 1.5B local)
+
+The V4 prompt-hygiene experiment (`docs/test-passes/v4-qwen-1.5b-prompt-hygiene.md`) produced a negative finding: removing the topic-specific FRIA examples from the V3 system prompt did *not* suppress the "FRIA leak" on Q2, Q3, and Q4 at Qwen 1.5B scale. The output text continued to insert "fundamental rights impact assessment" into Section 3 of unrelated queries, verbatim. We hypothesised the cause was a *training-data prior* — at 1.5B parameters, the model treats *deployer + high-risk + obligation* as strongly co-occurring with *FRIA* and reaches for that phrase regardless of instruction.
+
+Stage 8 tests this hypothesis directly by holding the V4 prompt and BGE retrieval constant and changing only the model size. Run on Colab Tesla T4 GPU with `Qwen/Qwen2.5-7B-Instruct` (fp16, `device_map="auto"` to handle the model's footprint relative to T4's 16 GB). Full verbatim outputs in `docs/test-passes/v4-qwen-7b-colab.md`.
+
+**Headline result: the FRIA leak is suppressed at 7B+.**
+
+| Query | V4 1.5B local | V4 7B Colab |
+|---|---|---|
+| Q2 red-teaming | FRIA leak (Section 3): *"policy does not address performing a fundamental rights impact assessment"* | **No leak.** Cites Article 9 para-8 testing requirement |
+| Q3 Article 22 | FRIA leak (Section 3): *"fundamental rights impact assessment required by UK GDPR Article 22"* (fabricated) | **No leak.** Substantively correct: identifies missing sub-clauses (human intervention, contest, point of view) |
+| Q4 transparency | FRIA leak persisted in Section 3 | **No leak.** New failure mode (wrong-audience: cites Article 13 para-1 transparency-to-deployers for a query about transparency-to-candidates) |
+| Q5 FRIA target | Wrong conclusion (accepted Novara's "Standard AI Feature" self-classification) | **Clean and correct.** Cites Article 27 para-1, distinguishes FRIA from DPIA explicitly |
+
+This is now a clean three-step empirical sequence: V3 1.5B (leak present, prompt mentions FRIA) → V4 1.5B (leak persists, prompt no longer mentions FRIA) → V4 7B (leak gone, same prompt as V4 1.5B). The only variable across the second and third steps is model size; the leak vanishes. **The 1.5B-vs-7B substitution is the cleanest empirical demonstration the project has of model-scale capability differences on a substantive failure mode.**
+
+**Three orthogonal findings consolidate from Stage 8:**
+
+1. **Training-data prior at small-model scale is real and substantial.** The FRIA leak in V3 1.5B and V4 1.5B was a probabilistic association between *deployer + high-risk + obligation* prompts and *fundamental rights impact assessment* outputs. At 7B the association is suppressed. This is not a prompt-design problem; we tried prompt design (V3 → V4) and it did nothing. It is a *parameter-count problem*, addressable only by scaling.
+
+2. **Retrieval failures are upstream of LLM size.** Q4 wrong-audience anchoring persists at 7B because BGE-large ranks Article 13 para-1 highest on lexical overlap with the query word "transparency". A 70B model running the same retrieval input would make the same error. This validates Category 1 mitigation territory (query expansion / disambiguation) as orthogonal to LLM-scale work.
+
+3. **Architectural single-obligation limits are not fixable by scale.** Q1 multi-facet on V4 7B still produces single-obligation output, the same shape as V4 1.5B (just without truncation). The simplified architecture is by construction single-call, single-output. Scaling the LLM does not introduce decomposition. Mitigations are architectural (light decomposition before `analyse()`), not model-side.
+
+**Anomaly worth recording:** Q1 latency was 696.8s on Colab T4. T4's 16 GB GPU is ~2 GB short of full residence for fp16 7B + activations. `device_map="auto"` handled this by offloading some layers to CPU, surviving the OOM but generating slowly via per-token GPU↔CPU transfers. Future Colab runs should use Qwen 3B (full GPU residence) or 4-bit quantisation. *The anomaly is environment-bound, not model-bound; output substance is unaffected.*
+
+**Q5 is now demo-quality.** The 7B Section 3 reads: *"The policy does not address the requirement for a fundamental rights impact assessment, which is distinct from the DPIA mentioned in the policy."* Clean, accurate, defensible, FRIA-vs-DPIA explicit. This is the strongest gap-finding output any prompt-or-model combination has produced; recommended as the demo-day Q5 output.
+
+**What Stage 8 does NOT establish:**
+- That 7B is the right *production* default. The local 1.5B path remains the demo-reliability default (no Colab dependency, no API keys, no daily limits). 7B is the *evaluation* default for empirical comparison points.
+- That every failure mode is now categorised. Q2 produced a *new* failure mode at 7B (a reading error: model says "policy does not mention testing prior to deployment" while citing a §3.4 chunk that explicitly addresses Gate G2 pre-deployment red-teaming). Worth a follow-up test pass.
+- That CPU offloading is acceptable. It is a workaround for this specific session, not a recommended pattern. Documented for the next reader so they don't conclude *"7B is unusable"*.
+
+**For the report's Critical Analysis dimension,** Stage 8 contributes:
+- The cleanest empirical narrative arc the project has on prompt-design-vs-model-scale: V3 → V4 (negative finding) → 7B (positive finding).
+- An evidence-based claim that the three error categories in this document attach to *three different layers* of the system, with three different mitigation paths — not one homogeneous "improve the LLM" answer.
+- A defensible position on the deployment trade-off: small-model demo for reliability, larger-model evaluation for substance, with the empirical grounds for both choices documented.
+
+---
+
 ## The retrieval-and-generation pipeline as five layers
 
 Before walking through error categories, it's useful to disambiguate where in the system each failure mode actually attaches. The RAG pipeline has five distinct layers:
@@ -383,7 +424,7 @@ The project's distinctive intellectual claim shifts from *"we built a sophistica
 
 **"We evaluated a RAG-based compliance gap analysis system across two architectural variants. Retrieval quality is one significant determinant of accuracy — addressed by FLEX-3 (BGE-large) and validated empirically. But the multi-step chain has additional architectural failure modes that retrieval improvement does not fix: decomposition drift (CHN-01 produces off-topic sub-questions), miscalibrated silence detection (the spec's freeze-gate τ recalibration step was never empirically executed), and unreliable provenance labelling (regulatory_provision picks the first retrieved chunk per sub-question rather than tracing per obligation). We pivoted to a simplified single-call architecture that avoids these failure modes by removing the intermediate decomposition and threshold-grounded silence detection steps, and produces useful output on the headline silence target."**
 
-This is a stronger claim. It's evidence-based (Stages 1, 5, 6, 7 each contribute verifiable specimens). It's reproducible (the failure modes have logged outputs; the mitigations have clear paths). It's defendable (each architectural decision has a why and a how-tested-it).
+This is a stronger claim. It's evidence-based (Stages 1, 5, 6, 7, 8 each contribute verifiable specimens). It's reproducible (the failure modes have logged outputs; the mitigations have clear paths). It's defendable (each architectural decision has a why and a how-tested-it).
 
 ---
 
@@ -396,7 +437,7 @@ This is a stronger claim. It's evidence-based (Stages 1, 5, 6, 7 each contribute
 | Presentation & Clarity | 20 | Provides a structured narrative for the report's discussion sections — the journey arc (build → evaluate → diagnose → simplify → iterate) is logical and well-paced. |
 | Problem definition, system design & interaction logic | 20 | The "why two architectures" framing is a coherent system-design argument. |
 | Implementation | 20 | The implementation itself sits in `src/`; this document supports it by anchoring why each architectural choice was made and how it was tested. |
-| **Evaluation protocols** | **20** | This document's Stage 1–7 *is* the evaluation. Tabulated outputs across queries, against a manually-curated gold set (`intentional-gaps.md`), with documented methodology. Stage 5 adds an empirically-measured comparison between embedding models (MiniLM vs BGE-large) and an empirical τ histogram showing the original threshold was likely uncalibrated. Stage 6 closes the Stage 5 scope question end-to-end on Q5 for the simplified architecture. Stage 7 closes the parallel question for the chain — finding that even with BGE the chain has three independent architectural failure modes (decomposition drift, miscalibrated silence detection, unreliable provenance) that retrieval upgrade does not fix. Currently the report's weakest dimension; this document directly addresses it. |
+| **Evaluation protocols** | **20** | This document's Stage 1–8 *is* the evaluation. Tabulated outputs across queries, against a manually-curated gold set (`intentional-gaps.md`), with documented methodology. Stage 5 adds an empirically-measured comparison between embedding models (MiniLM vs BGE-large) and an empirical τ histogram showing the original threshold was likely uncalibrated. Stage 6 closes the Stage 5 scope question end-to-end on Q5 for the simplified architecture. Stage 7 closes the parallel question for the chain — finding that even with BGE the chain has three independent architectural failure modes (decomposition drift, miscalibrated silence detection, unreliable provenance) that retrieval upgrade does not fix. Stage 8 holds prompt and retrieval constant and varies model size (Qwen 1.5B local → Qwen 7B Colab) on the simplified path, demonstrating that the small-model "FRIA leak" is a training-data prior suppressed at 7B+, while retrieval-side and architectural failure modes persist — the cleanest empirical narrative the project has on prompt-vs-scale separation. Currently the report's weakest dimension; this document directly addresses it. |
 | **Critical Analysis** | **20** | The brief explicitly names "task misalignment" and "hallucination" as the systematic-error categories strong reports identify. We have specimens of both, plus a third category (retrieval vocabulary mismatch). Mitigations for each. The retrieval-as-bottleneck insight is exactly the "overarching critical analysis of design choices and the performance of the system overall" the rubric describes. |
 
 ### Component 2 — Presentation (50% of module mark)
