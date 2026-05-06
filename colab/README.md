@@ -19,26 +19,26 @@ comparison: same code, bigger model, GPU acceleration. Outputs feed
 3. In the model-selector cell, uncomment exactly one line — see the table in the notebook.
 4. Run all cells.
 
-The notebook installs only `sentence-transformers transformers accelerate diskcache gptqmodel` — Colab's preinstalled torch/numpy stay in place to keep the CUDA wheel alignment intact. Do not run `pip install -r requirements.txt` on Colab; that file is for the local Mac CPU environment.
+The notebook installs only `sentence-transformers transformers accelerate diskcache "numpy<2.2"` — Colab's preinstalled torch/numpy stay in place to keep the CUDA wheel alignment intact. Do not run `pip install -r requirements.txt` on Colab; that file is for the local Mac CPU environment.
+
+5. Download `colab_outputs.md` from the Files panel; rename and commit it under
+   `docs/test-passes/` with the convention `<prompt-version>-<model>-colab.md`.
 
 ## Model menu
 
 | Model | Size | Fits T4? | HF gated? | Purpose |
 |---|---|---|---|---|
 | `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B | Yes | No | Control — same as local default |
-| `Qwen/Qwen2.5-3B-Instruct` | 3B | Yes | No | Intermediate scale |
-| `Qwen/Qwen2.5-7B-Instruct` | 7B | No (CPU offload) | No | Slow on T4 (~3 min/query) |
-| `Qwen/Qwen2.5-7B-Instruct-AWQ` | 7B (4-bit) | Yes | No | Fast 7B on T4 |
-| `google/gemma-2-2b-it` | 2.6B | Yes | **Yes** | Alternative family |
+| `Qwen/Qwen2.5-3B-Instruct` | 3B | Yes | No | Intermediate scale, fast on T4 |
+| `Qwen/Qwen2.5-7B-Instruct` | 7B | No (CPU offload) | No | Full 7B baseline (~3 min/query on T4) |
+| `google/gemma-2-2b-it` | 2.6B | Yes | **Yes** | Alternative family — tests if FRIA leak is Qwen-specific |
 
 For Gemma: accept the license on its HuggingFace model page, then add `HF_TOKEN` as a Colab secret (left sidebar → key icon). The notebook auto-detects gated models and pulls the token.
 
 ## Notes
 
-- AWQ models require the `gptqmodel` package (already installed by the pip cell). They load through the same `transformers.from_pretrained` path; no additional code changes. Older transformers versions used `autoawq` — newer versions unified AWQ loading under `gptqmodel`.
+- An AWQ-quantised 7B option (`Qwen/Qwen2.5-7B-Instruct-AWQ`) was previously in the menu as a fast-on-T4 alternative. The required runtime libraries (`autoawq`, `gptqmodel`) had cross-incompatibilities with Colab's preinstalled scientific stack at run time and we removed the option. Qwen 3B fp16 is the substitute for fast Colab runs.
 - For Gemma 2-9B or Llama 3-8B, T4 is too small for fp16 — would need bitsandbytes 4-bit quantisation, which is a code change in `src/simplified.py` not currently implemented.
-5. Download `colab_outputs.md` from the Files panel; rename and commit it under
-   `docs/test-passes/` with the convention `<prompt-version>-<model>-colab.md`.
 
 ## Why a separate environment
 
