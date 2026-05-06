@@ -199,9 +199,14 @@ def _load_llm(model_id: str = LLM_MODEL_ID):
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if torch.cuda.is_available():
+        # device_map="auto" streams weights directly to GPU during load (via
+        # accelerate). Without it, transformers loads the full model into CPU
+        # RAM first then moves to GPU — fine on a workstation, but on Colab T4
+        # (~13 GB CPU RAM) loading a 7B model in fp16 (~14 GB intermediate)
+        # OOMs the kernel. device_map drops peak CPU usage to ~2-3 GB.
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, dtype=torch.float16
-        ).to("cuda")
+            model_id, dtype=torch.float16, device_map="auto"
+        )
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_id, dtype=torch.float32
