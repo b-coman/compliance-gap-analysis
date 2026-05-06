@@ -18,6 +18,8 @@ comparison: same code, bigger model, GPU acceleration. Outputs feed
 2. Runtime → Change runtime type → **GPU** (T4 is fine for 7B in fp16).
 3. Edit the `MODEL_ID` env var cell to pick the model (default: `Qwen/Qwen2.5-7B-Instruct`).
 4. Run all cells.
+
+The notebook installs only `sentence-transformers transformers accelerate diskcache` — Colab's preinstalled torch/numpy stay in place to keep the CUDA wheel alignment intact. Do not run `pip install -r requirements.txt` on Colab; that file is for the local Mac CPU environment.
 5. Download `colab_outputs.md` from the Files panel; rename and commit it under
    `docs/test-passes/` with the convention `<prompt-version>-<model>-colab.md`.
 
