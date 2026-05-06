@@ -31,9 +31,12 @@ The notebook installs only `sentence-transformers transformers accelerate diskca
 | `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B | Yes | No | Control — same as local default |
 | `Qwen/Qwen2.5-3B-Instruct` | 3B | Yes | No | Intermediate scale, fast on T4 |
 | `Qwen/Qwen2.5-7B-Instruct` | 7B | No (CPU offload) | No | Full 7B baseline (~3 min/query on T4) |
-| `google/gemma-2-2b-it` | 2.6B | Yes | **Yes** | Alternative family — tests if FRIA leak is Qwen-specific |
+| `google/gemma-2-2b-it` | 2.6B | Yes | **Yes** | Older Gemma family — smaller comparison point |
+| `google/gemma-3-4b-it` | 4B | Yes | **Yes** | Newer Gemma family — direct family-vs-family comparison to Qwen 3B (recommended Gemma) |
 
 For Gemma: accept the license on its HuggingFace model page, then add `HF_TOKEN` as a Colab secret (left sidebar → key icon). The notebook auto-detects gated models and pulls the token.
+
+**Gemma 3 caveat:** Gemma 3 (March 2025) requires `transformers >= 4.49`. If Colab's preinstalled transformers is older, the model load will raise `Unknown architecture: Gemma3ForCausalLM`. Fix: `!pip install --upgrade transformers`, restart runtime, re-run. The upgrade may cascade into other dep conflicts; fallback to Gemma 2-2B.
 
 ## Notes
 
