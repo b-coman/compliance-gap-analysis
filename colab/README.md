@@ -19,7 +19,7 @@ comparison: same code, bigger model, GPU acceleration. Outputs feed
 3. In the model-selector cell, uncomment exactly one line — see the table in the notebook.
 4. Run all cells.
 
-The notebook installs only `sentence-transformers transformers accelerate diskcache autoawq` — Colab's preinstalled torch/numpy stay in place to keep the CUDA wheel alignment intact. Do not run `pip install -r requirements.txt` on Colab; that file is for the local Mac CPU environment.
+The notebook installs only `sentence-transformers transformers accelerate diskcache gptqmodel` — Colab's preinstalled torch/numpy stay in place to keep the CUDA wheel alignment intact. Do not run `pip install -r requirements.txt` on Colab; that file is for the local Mac CPU environment.
 
 ## Model menu
 
@@ -35,7 +35,7 @@ For Gemma: accept the license on its HuggingFace model page, then add `HF_TOKEN`
 
 ## Notes
 
-- AWQ models require the `autoawq` package (already installed by the pip cell). They load through the same `transformers.from_pretrained` path; no additional code changes.
+- AWQ models require the `gptqmodel` package (already installed by the pip cell). They load through the same `transformers.from_pretrained` path; no additional code changes. Older transformers versions used `autoawq` — newer versions unified AWQ loading under `gptqmodel`.
 - For Gemma 2-9B or Llama 3-8B, T4 is too small for fp16 — would need bitsandbytes 4-bit quantisation, which is a code change in `src/simplified.py` not currently implemented.
 5. Download `colab_outputs.md` from the Files panel; rename and commit it under
    `docs/test-passes/` with the convention `<prompt-version>-<model>-colab.md`.
