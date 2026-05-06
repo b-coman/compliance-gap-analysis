@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Architecture Diagrams — slide-friendly</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --muted: #555;
+    --line: #d0d0d0;
+    --determ-fill: #dbeafe;
+    --determ-edge: #1d4ed8;
+    --llm-fill: #fef3c7;
+    --llm-edge: #b45309;
+    --user-fill: #e7f5ee;
+    --user-edge: #047857;
+    --silent-fill: #f3e8ff;
+    --silent-edge: #6b21a8;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    margin: 0;
+    background: #fff;
+  }
+  body { padding: 0; }
+
+  /* Each "slide" container — 16:9-ish, fills viewport, paginates on print */
+  .slide {
+    width: 100%;
+    min-height: 100vh;
+    padding: 3rem 3rem 2rem;
+    display: flex;
+    flex-direction: column;
+    page-break-after: always;
+    border-bottom: 1px solid var(--line);
+  }
+  .slide:last-child { border-bottom: none; }
+
+  .slide h1 {
+    font-size: 2rem;
+    margin: 0 0 0.4rem;
+    font-weight: 700;
+  }
+  .slide .subtitle {
+    font-size: 1.05rem;
+    color: var(--muted);
+    margin: 0 0 2rem;
+  }
+  .stat-strip {
+    margin-top: auto;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    display: flex;
+    gap: 3rem;
+    font-size: 1rem;
+    color: var(--muted);
+  }
+  .stat-strip strong { color: var(--ink); font-size: 1.6rem; display: block; }
+
+  /* Horizontal flow row (simplified path) */
+  .flow-h {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    gap: 0;
+    flex: 1;
+    margin: 1rem 0;
+  }
+  .flow-h .node-h {
+    flex: 1;
+    max-width: 200px;
+    border-radius: 12px;
+    padding: 1.1rem 0.9rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.06);
+  }
+  .flow-h .arrow-h {
+    align-self: center;
+    width: 40px;
+    height: 4px;
+    background: var(--ink);
+    position: relative;
+    margin: 0 4px;
+  }
+  .flow-h .arrow-h::after {
+    content: "";
+    position: absolute;
+    right: -1px;
+    top: -8px;
+    border: 10px solid transparent;
+    border-left-color: var(--ink);
+    border-right: 0;
+  }
+
+  .node-h .step {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.3rem;
+    color: var(--muted);
+  }
+  .node-h .label {
+    font-size: 1.1rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .node-h .meta {
+    font-size: 0.85rem;
+    margin-top: 0.4rem;
+    color: var(--muted);
+  }
+  .node-h .tech, .node-v .tech {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 0.5rem;
+    padding-top: 0.3rem;
+    border-top: 1px dashed rgba(0,0,0,0.18);
+    line-height: 1.4;
+  }
+  .node-v .tech { margin-top: 0.35rem; padding-top: 0.25rem; }
+
+  /* Vertical flow column (chain) */
+  .flow-v {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    margin: 0.5rem 0;
+  }
+  .node-v {
+    width: 100%;
+    max-width: 540px;
+    border-radius: 10px;
+    padding: 0.85rem 1.1rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .node-v .badge {
+    flex-shrink: 0;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.8);
+    border: 2px solid;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-align: center;
+    line-height: 1.1;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .node-v .body {
+    flex: 1;
+  }
+  .node-v .step {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .node-v .label {
+    font-size: 1.1rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .arrow-v {
+    width: 4px;
+    background: var(--ink);
+    height: 18px;
+    position: relative;
+  }
+  .arrow-v::after {
+    content: "";
+    position: absolute;
+    bottom: -1px;
+    left: -8px;
+    border: 10px solid transparent;
+    border-top-color: var(--ink);
+    border-bottom: 0;
+  }
+
+  /* Color modifiers */
+  .node-h.user, .node-v.user { background: var(--user-fill); border: 2px solid var(--user-edge); }
+  .node-h.user .badge, .node-v.user .badge { border-color: var(--user-edge); color: var(--user-edge); }
+  .node-h.determ, .node-v.determ { background: var(--determ-fill); border: 2px solid var(--determ-edge); }
+  .node-h.determ .badge, .node-v.determ .badge { border-color: var(--determ-edge); color: var(--determ-edge); }
+  .node-h.llm, .node-v.llm { background: var(--llm-fill); border: 2px solid var(--llm-edge); }
+  .node-h.llm .badge, .node-v.llm .badge { border-color: var(--llm-edge); color: var(--llm-edge); }
+  .node-h.silent, .node-v.silent { background: var(--silent-fill); border: 2px solid var(--silent-edge); }
+  .node-h.silent .badge, .node-v.silent .badge { border-color: var(--silent-edge); color: var(--silent-edge); }
+
+  .legend {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 0.5rem;
+    font-size: 0.95rem;
+  }
+  .legend-item { display: flex; align-items: center; gap: 0.5rem; }
+  .legend .swatch {
+    width: 18px; height: 18px; border-radius: 4px; border: 2px solid;
+  }
+  .legend .swatch.user { background: var(--user-fill); border-color: var(--user-edge); }
+  .legend .swatch.determ { background: var(--determ-fill); border-color: var(--determ-edge); }
+  .legend .swatch.llm { background: var(--llm-fill); border-color: var(--llm-edge); }
+  .legend .swatch.silent { background: var(--silent-fill); border-color: var(--silent-edge); }
+
+  /* Comparison slide */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    flex: 1;
+    margin: 1rem 0;
+  }
+  .compare-col {
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    padding: 1.5rem 1.5rem 1rem;
+    display: flex;
+    flex-direction: column;
+  }
+  .compare-col.simplified { border-color: var(--user-edge); background: #f7fcf9; }
+  .compare-col.chain { border-color: var(--llm-edge); background: #fffbf2; }
+  .compare-col h3 {
+    font-size: 1.4rem;
+    margin: 0 0 1rem;
+  }
+  .compare-col dl {
+    margin: 0;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.5rem 1rem;
+  }
+  .compare-col dt {
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    align-self: center;
+  }
+  .compare-col dd {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 500;
+  }
+
+  @media print {
+    .slide { min-height: auto; padding: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+
+
+<!-- SLIDE 1 — Simplified path -->
+<section class="slide">
+  <h1>Simplified architecture — production demo</h1>
+  <p class="subtitle">User question to gap analysis in a single LLM call.</p>
+
+  <div class="flow-v">
+
+    <div class="node-v user">
+      <div class="badge">In</div>
+      <div class="body"><div class="step">Input</div><div class="label">User question</div><div class="tech">stdin · CLI</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v determ">
+      <div class="badge">No<br>LLM</div>
+      <div class="body"><div class="step">Step 1</div><div class="label">Retrieve law (top-5 REG chunks)</div><div class="tech">sentence-transformers · BAAI/bge-large-en-v1.5 · NumPy cosine</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v determ">
+      <div class="badge">No<br>LLM</div>
+      <div class="body"><div class="step">Step 2</div><div class="label">Retrieve policy (top-5 deployer chunks · ICO excluded)</div><div class="tech">sentence-transformers · BAAI/bge-large-en-v1.5 · NumPy cosine</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v llm">
+      <div class="badge">1<br>LLM</div>
+      <div class="body"><div class="step">Step 3</div><div class="label">LLM call (greedy decoding)</div><div class="tech">transformers (HF) · Qwen/Qwen2.5-1.5B-Instruct · diskcache</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v user">
+      <div class="badge">Out</div>
+      <div class="body"><div class="step">Output</div><div class="label">Gap analysis · 3 sections (Law / Policy / Gap)</div><div class="tech">stdout · markdown</div></div>
+    </div>
+
+  </div>
+
+  <div class="legend">
+    <span class="legend-item"><span class="swatch user"></span>User</span>
+    <span class="legend-item"><span class="swatch determ"></span>Deterministic (no LLM)</span>
+    <span class="legend-item"><span class="swatch llm"></span>LLM call</span>
+  </div>
+
+  <div class="stat-strip">
+    <div><strong>1</strong>LLM call per query</div>
+    <div><strong>~4K</strong>tokens per query</div>
+    <div><strong>~30s</strong>cold on CPU</div>
+    <div><strong>&lt; 1s</strong>cached</div>
+  </div>
+</section>
+
+
+<!-- SLIDE 2 — Chain -->
+<section class="slide">
+  <h1>Chain architecture — initial baseline</h1>
+  <p class="subtitle">Five-step obligation-level chain, evaluated then superseded.</p>
+
+  <div class="flow-v">
+
+    <div class="node-v user">
+      <div class="badge">In</div>
+      <div class="body"><div class="step">Input</div><div class="label">User question</div><div class="tech">stdin · CLI</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v llm">
+      <div class="badge">1<br>LLM</div>
+      <div class="body"><div class="step">CHN-01</div><div class="label">Decompose into sub-questions (≤ 4)</div><div class="tech">groq SDK · llama-3.3-70b-versatile</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v determ">
+      <div class="badge">No<br>LLM</div>
+      <div class="body"><div class="step">CHN-02 · per sub-Q</div><div class="label">Retrieve law chunks (top-5)</div><div class="tech">sentence-transformers · multi-qa-MiniLM-L6-cos-v1 · NumPy cosine</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v llm">
+      <div class="badge">N<br>LLM</div>
+      <div class="body"><div class="step">CHN-03 · per sub-Q</div><div class="label">Extract atomic obligations</div><div class="tech">groq SDK · llama-3.3-70b-versatile</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v silent">
+      <div class="badge">No<br>LLM</div>
+      <div class="body"><div class="step">CHN-04 phase 1 · per obligation</div><div class="label">Silence detection (cosine ≥ τ)</div><div class="tech">sentence-transformers · MiniLM · NumPy threshold</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v llm">
+      <div class="badge">N<br>LLM</div>
+      <div class="body"><div class="step">CHN-04 phase 2 · per sub-Q</div><div class="label">Classify surviving obligations</div><div class="tech">groq SDK · llama-3.3-70b-versatile</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v llm">
+      <div class="badge">1<br>LLM</div>
+      <div class="body"><div class="step">CHN-05</div><div class="label">Synthesise residual-risk register</div><div class="tech">groq SDK · llama-3.3-70b-versatile</div></div>
+    </div>
+    <div class="arrow-v"></div>
+
+    <div class="node-v user">
+      <div class="badge">Out</div>
+      <div class="body"><div class="step">Output</div><div class="label">~20 structured rows · 9 fields each</div><div class="tech">JSON / pandas DataFrame</div></div>
+    </div>
+
+  </div>
+
+  <div class="legend">
+    <span class="legend-item"><span class="swatch user"></span>User</span>
+    <span class="legend-item"><span class="swatch determ"></span>Deterministic</span>
+    <span class="legend-item"><span class="swatch silent"></span>Silence detection</span>
+    <span class="legend-item"><span class="swatch llm"></span>LLM call</span>
+  </div>
+
+  <div class="stat-strip">
+    <div><strong>8–10</strong>LLM calls per query</div>
+    <div><strong>~50K</strong>tokens per query</div>
+    <div><strong>~2.5 min</strong>on Groq Llama 70B</div>
+    <div><strong>~2/day</strong>free-tier limit</div>
+  </div>
+</section>
+
+
+<!-- SLIDE 3 — Comparison -->
+<section class="slide">
+  <h1>Two architectures side-by-side</h1>
+  <p class="subtitle">Why we moved from chain to simplified path.</p>
+
+  <div class="compare">
+
+    <div class="compare-col simplified">
+      <h3>Simplified (production)</h3>
+      <dl>
+        <dt>LLM calls</dt><dd>1 per query</dd>
+        <dt>Tokens</dt><dd>~3–5K</dd>
+        <dt>Model</dt><dd>Qwen 2.5-1.5B (local)</dd>
+        <dt>Embeddings</dt><dd>BGE-large</dd>
+        <dt>Output</dt><dd>3-section text</dd>
+        <dt>Q5 (FRIA)</dt><dd>Functionally correct</dd>
+        <dt>Free tier</dt><dd>Unlimited (local)</dd>
+      </dl>
+    </div>
+
+    <div class="compare-col chain">
+      <h3>Chain (baseline)</h3>
+      <dl>
+        <dt>LLM calls</dt><dd>8–10 per query</dd>
+        <dt>Tokens</dt><dd>~50K</dd>
+        <dt>Model</dt><dd>Llama 3.3-70B (Groq)</dd>
+        <dt>Embeddings</dt><dd>MiniLM</dd>
+        <dt>Output</dt><dd>20-row register</dd>
+        <dt>Q5 (FRIA)</dt><dd>Wrong (Article 26 instead)</dd>
+        <dt>Free tier</dt><dd>~2 queries/day</dd>
+      </dl>
+    </div>
+
+  </div>
+
+  <div class="stat-strip">
+    <div style="flex:1; font-size: 1.05rem; color: var(--ink);">
+      <strong style="font-size: 1.05rem;">The trade-off:</strong>
+      structured 20-row output traded for reliability, latency, and unlimited iteration —
+      after empirical evaluation surfaced three architectural failure modes in the chain
+      that retrieval improvement alone could not fix.
+    </div>
+  </div>
+</section>
+
+
+</body>
+</html>

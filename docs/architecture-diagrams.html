@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Compliance Gap Analysis — Architecture Diagrams</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --ink: #1a1a1a;
+    --muted: #6b6b6b;
+    --line: #d0d0d0;
+    --shared-fill: #f3f4f6;
+    --shared-edge: #6b7280;
+    --determ-fill: #dbeafe;
+    --determ-edge: #1d4ed8;
+    --llm-fill: #fef3c7;
+    --llm-edge: #b45309;
+    --user-fill: #e7f5ee;
+    --user-edge: #047857;
+    --silent-fill: #f3e8ff;
+    --silent-edge: #6b21a8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    margin: 0;
+    padding: 2rem 1rem;
+    line-height: 1.55;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h1 {
+    font-size: 1.75rem;
+    margin: 0 0 0.5rem;
+    font-weight: 600;
+  }
+  h2 {
+    font-size: 1.3rem;
+    margin: 3rem 0 0.5rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--ink);
+    font-weight: 600;
+  }
+  .subtitle { color: var(--muted); margin-top: 0; font-size: 0.95rem; }
+  .legend {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin: 1rem 0;
+    font-size: 0.85rem;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .swatch {
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 2px solid;
+  }
+  .swatch.user { background: var(--user-fill); border-color: var(--user-edge); }
+  .swatch.shared { background: var(--shared-fill); border-color: var(--shared-edge); }
+  .swatch.determ { background: var(--determ-fill); border-color: var(--determ-edge); }
+  .swatch.llm { background: var(--llm-fill); border-color: var(--llm-edge); }
+  .swatch.silent { background: var(--silent-fill); border-color: var(--silent-edge); }
+
+  .diagram {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 1.5rem 0;
+  }
+  .node {
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    margin: 0;
+    text-align: left;
+    width: 100%;
+    max-width: 560px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .node .step {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.2rem;
+  }
+  .node .title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+  }
+  .node .detail {
+    font-size: 0.85rem;
+    color: var(--muted);
+    line-height: 1.45;
+  }
+  .node .detail code {
+    background: rgba(0,0,0,0.06);
+    padding: 0 0.3em;
+    border-radius: 3px;
+    font-size: 0.85em;
+  }
+  .node.user { background: var(--user-fill); border: 2px solid var(--user-edge); }
+  .node.shared { background: var(--shared-fill); border: 2px solid var(--shared-edge); }
+  .node.determ { background: var(--determ-fill); border: 2px solid var(--determ-edge); }
+  .node.llm { background: var(--llm-fill); border: 2px solid var(--llm-edge); }
+  .node.silent { background: var(--silent-fill); border: 2px solid var(--silent-edge); }
+
+  .arrow {
+    width: 2px;
+    background: var(--ink);
+    height: 28px;
+    margin: 0;
+    position: relative;
+  }
+  .arrow::after {
+    content: "";
+    position: absolute;
+    bottom: -1px;
+    left: -5px;
+    border: 6px solid transparent;
+    border-top-color: var(--ink);
+    border-bottom: 0;
+  }
+
+  .branch-row {
+    display: flex;
+    gap: 1rem;
+    width: 100%;
+    max-width: 920px;
+    justify-content: center;
+  }
+  .branch-row .node { max-width: 280px; }
+
+  .label-side {
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-style: italic;
+    margin: 0.25rem 0;
+    text-align: center;
+    max-width: 560px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+  th, td {
+    padding: 0.6rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--line);
+  }
+  th { background: #f0f0f0; font-weight: 600; }
+  td.center { text-align: center; }
+
+  .note-block {
+    background: #fff;
+    border-left: 4px solid var(--shared-edge);
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Compliance Gap Analysis — Architecture Diagrams</h1>
+  <p class="subtitle">
+    Two architectures evaluated in this project. The simplified path is the production demo;
+    the chain is the initial evaluated baseline that surfaced the failure modes documented in
+    <code>docs/evaluation-findings.md</code>.
+  </p>
+
+  <div class="legend">
+    <span class="legend-item"><span class="swatch user"></span>User-facing</span>
+    <span class="legend-item"><span class="swatch shared"></span>Shared infrastructure</span>
+    <span class="legend-item"><span class="swatch determ"></span>Deterministic step (no LLM)</span>
+    <span class="legend-item"><span class="swatch llm"></span>LLM call</span>
+    <span class="legend-item"><span class="swatch silent"></span>Silence detection (deterministic)</span>
+  </div>
+
+
+  <h2>1 — Simplified architecture (production demo path)</h2>
+  <p class="subtitle">
+    Single LLM call per query. Implemented in <code>src/simplified.py</code>.
+    Cost: ~3,000–5,000 tokens, ~30s per cold query on local CPU, ~5–10s on Colab GPU.
+  </p>
+
+  <div class="diagram">
+
+    <div class="node user">
+      <div class="step">Input</div>
+      <div class="title">User question</div>
+      <div class="detail">
+        Compliance officer types a natural-language question, e.g.<br>
+        <em>"Have we performed a Fundamental Rights Impact Assessment under EU AI Act Article 27?"</em>
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node determ">
+      <div class="step">Step 1 · Retrieve regulation chunks (no LLM)</div>
+      <div class="title">BGE-large embedding + cosine top-k</div>
+      <div class="detail">
+        Embed the query with <code>BAAI/bge-large-en-v1.5</code> using BGE's
+        recommended query-instruction prefix. Compute cosine similarity against
+        pre-computed corpus embeddings (cached at <code>embeddings_bge/</code>).
+        Filter <code>corpus_tag == "REG"</code>; return top-5 law chunks.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node determ">
+      <div class="step">Step 2 · Retrieve deployer chunks (no LLM)</div>
+      <div class="title">Same retriever, different filter</div>
+      <div class="detail">
+        Same query embedding. Filter <code>corpus_tag in ("DEP", "DEP_EXTRAS")</code>;
+        return top-5 deployer-side chunks. <strong>ICO operational guidance is excluded
+        at this step</strong> — see <code>evaluation-findings.md</code> Stage 5/7 for the
+        contamination rationale.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node llm">
+      <div class="step">Step 3 · Single LLM call</div>
+      <div class="title">Qwen 2.5-1.5B-Instruct (greedy decoding)</div>
+      <div class="detail">
+        Construct prompt: <code>SYSTEM_PROMPT</code> (5 procedural rules) +
+        user message containing the question, the 5 law chunks, the 5 deployer chunks,
+        and a 3-section output template. Call once. <code>do_sample=False</code>,
+        <code>repetition_penalty=1.05</code>, <code>max_new_tokens=550</code>.
+        See <code>decisions.md</code> for decoding rationale.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node user">
+      <div class="step">Output</div>
+      <div class="title">3-section gap analysis</div>
+      <div class="detail">
+        Markdown text with three sections: <em>"What the law requires"</em>,
+        <em>"What the policy says"</em>, <em>"Gap"</em>. Each section cites
+        chunk_ids verbatim in [square brackets]. Cached on
+        <code>(rendered_prompt, model_id)</code> so re-runs of the same query
+        are sub-second.
+      </div>
+    </div>
+
+  </div>
+
+  <p class="label-side">
+    <strong>Total LLM calls:</strong> 1 &nbsp;·&nbsp;
+    <strong>Token cost:</strong> ~3–5K &nbsp;·&nbsp;
+    <strong>Cold latency:</strong> ~30s on CPU &nbsp;·&nbsp;
+    <strong>Cached latency:</strong> &lt; 1s
+  </p>
+
+  <div class="note-block">
+    <strong>Why this shape:</strong> single LLM call avoids the multi-step chain's compounding
+    error modes (decomposition drift, miscalibrated silence detection, mislabelled provenance).
+    Trade-off: produces one paragraph of free-text comparison rather than a structured 20-row
+    register; see Section 3 below for the side-by-side.
+  </div>
+
+
+  <h2>2 — Chain architecture (initial evaluated baseline)</h2>
+  <p class="subtitle">
+    Five-step obligation-level reasoning chain. Implemented in <code>src/chain.py</code>.
+    Cost: ~50,000 tokens, ~2.5 min per cold query on Groq Llama 70B (free-tier daily limit
+    after 2 queries). Preserved in the codebase as the as-evaluated baseline that supports
+    the report's findings; not the production demo path.
+  </p>
+
+  <div class="diagram">
+
+    <div class="node user">
+      <div class="step">Input</div>
+      <div class="title">User question</div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node llm">
+      <div class="step">CHN-01 · Decompose</div>
+      <div class="title">1 LLM call</div>
+      <div class="detail">
+        Split user query into focused sub-questions. Cap at 4 sub-questions
+        (<code>decisions.md</code> §3). Typical: 3 sub-questions per query.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node determ">
+      <div class="step">CHN-02 · Retrieve regulation chunks (no LLM)</div>
+      <div class="title">Per sub-question</div>
+      <div class="detail">
+        For each sub-question, MiniLM-based retrieval, top-5 chunks from
+        <code>corpus_tag == "REG"</code>. Result: ~15–20 regulation chunks total.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node llm">
+      <div class="step">CHN-03 · Extract atomic obligations</div>
+      <div class="title">1 LLM call <em>per sub-question</em></div>
+      <div class="detail">
+        For each sub-question, send retrieved law chunks to LLM with prompt
+        <em>"extract atomic obligations from these chunks"</em>. Each call returns ~5
+        obligation strings. Result: typically 12–20 obligations total.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node silent">
+      <div class="step">CHN-04 phase 1 · Silence detection (no LLM)</div>
+      <div class="title">Per obligation, deterministic threshold check</div>
+      <div class="detail">
+        For <em>each</em> obligation: embed it, compute max cosine similarity against
+        deployer corpora (DEP + DEP_EXTRAS + ICO operational guidance). If
+        <code>max_sim &lt; τ</code> (default 0.35), classify as <strong>silent</strong>;
+        skip phase 2. Otherwise pass through.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node llm">
+      <div class="step">CHN-04 phase 2 · Classify surviving obligations</div>
+      <div class="title">1 LLM call <em>per sub-question</em>, batched</div>
+      <div class="detail">
+        For surviving obligations in each sub-question, send obligations + retrieved
+        deployer evidence to LLM with prompt <em>"classify each obligation as silent /
+        partial / adequate / contradictory, with citations"</em>. Output: per-obligation
+        classification with chunk_ids.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node llm">
+      <div class="step">CHN-05 · Synthesise register</div>
+      <div class="title">1 LLM call (final)</div>
+      <div class="detail">
+        Takes all per-obligation rows from all sub-questions. Calls LLM with prompt
+        <em>"add a gap_characterisation field to each row describing what aspect of the
+        obligation the policy fails to address"</em>. Output: structured register rows.
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <div class="node user">
+      <div class="step">Output</div>
+      <div class="title">Residual-risk register (~20 rows)</div>
+      <div class="detail">
+        9-field structured rows per obligation: <code>regulatory_provision</code>,
+        <code>regulation_chunk_ids</code>, <code>obligation</code>, <code>match_status</code>,
+        <code>policy_evidence</code>, <code>extras_evidence</code>, <code>guidance_evidence</code>,
+        <code>gap_characterisation</code>, <code>confidence</code>.
+      </div>
+    </div>
+
+  </div>
+
+  <p class="label-side">
+    <strong>Total LLM calls:</strong> 8–10 (1 decompose + N extract + N classify + 1 synthesise) &nbsp;·&nbsp;
+    <strong>Token cost:</strong> ~50K &nbsp;·&nbsp;
+    <strong>Cold latency:</strong> ~2.5 min on Llama 70B (Groq)
+  </p>
+
+  <div class="note-block">
+    <strong>Why this shape was chosen originally:</strong> obligation-level matching makes
+    silences <em>structurally visible</em> per the project's distinctive intellectual claim
+    (D-008 in the spec). Threshold-grounded silence detection (Phase 1) was the spec's
+    differentiator: silence is a retrieval property, not an LLM judgement.<br><br>
+    <strong>Why we moved away from it:</strong> empirical evaluation surfaced three
+    architectural failure modes that retrieval improvement does not fix — decomposition
+    drift, miscalibrated silence detection (τ never empirically tuned), unreliable provenance
+    labelling. Plus free-tier Groq daily limits made iterative development impractical.
+    See <code>evaluation-findings.md</code> Stages 1, 5, 7.
+  </div>
+
+
+  <h2>3 — Side-by-side comparison</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Dimension</th>
+        <th>Simplified (production)</th>
+        <th>Chain (evaluated baseline)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Number of LLM calls per query</td>
+        <td class="center">1</td>
+        <td class="center">8–10</td>
+      </tr>
+      <tr>
+        <td>Token cost per query</td>
+        <td class="center">~3–5K</td>
+        <td class="center">~50K</td>
+      </tr>
+      <tr>
+        <td>Default LLM</td>
+        <td>Qwen 2.5-1.5B-Instruct (local)</td>
+        <td>Llama 3.3-70B-Versatile (Groq, free-tier)</td>
+      </tr>
+      <tr>
+        <td>Embedding model</td>
+        <td>BAAI/bge-large-en-v1.5</td>
+        <td>multi-qa-MiniLM-L6-cos-v1 (course default)</td>
+      </tr>
+      <tr>
+        <td>Operational corpus (ICO) used in retrieval?</td>
+        <td>No (excluded at query time)</td>
+        <td>Yes (silence detection includes it; documented contamination)</td>
+      </tr>
+      <tr>
+        <td>Output format</td>
+        <td>3-section text (free-form)</td>
+        <td>~20 structured register rows (9 fields each)</td>
+      </tr>
+      <tr>
+        <td>Free-tier daily query budget</td>
+        <td>Unlimited (local)</td>
+        <td>~2 queries/day (Groq daily token cap)</td>
+      </tr>
+      <tr>
+        <td>Headline gap finding (Q5 FRIA) accuracy</td>
+        <td>Functionally correct</td>
+        <td>Wrong (extracts Article 26 obligations instead of Article 27)</td>
+      </tr>
+      <tr>
+        <td>Defensible failure modes documented</td>
+        <td>Six patterns (see <code>simplified-baseline.md</code>)</td>
+        <td>Three architectural issues (see <code>evaluation-findings.md</code> Stage 7)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <footer>
+    Diagram source: <code>docs/architecture-diagrams.html</code>.
+    Data flow corresponds to the deployed code in <code>src/simplified.py</code> (simplified)
+    and <code>src/chain.py</code> + <code>src/llm/</code> (chain). Last revised 2026-05-06.
+  </footer>
+
+</div>
+</body>
+</html>

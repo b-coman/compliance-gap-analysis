@@ -25,7 +25,9 @@ env/
 # Project caches (per spec: embeddings + LLM responses)
 cache/
 embeddings/
+embeddings_bge/
 llm_cache/
+llm_cache_simplified/
 .cache/
 
 # Streamlit

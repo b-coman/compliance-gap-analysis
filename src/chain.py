@@ -1,5 +1,16 @@
 """CHN-01..CHN-07 — five-step obligation-level reasoning chain.
 
+This module is the *initial architecture as evaluated* for this project. It
+implements the multi-step chain documented in compliance-gap-analysis-spec.md
+§ Group: Reasoning Chain. Empirical evaluation (see docs/evaluation-findings.md
+Stages 1, 5, 7) found three architectural failure modes that retrieval upgrade
+does not fix: decomposition drift, miscalibrated silence detection, and
+unreliable provenance labelling. The production demo path is the simplified
+single-call architecture in src/simplified.py.
+
+This chain is preserved in the codebase as the empirical baseline that
+supports the report's Critical Analysis findings.
+
 The unit of comparison is the atomic obligation, not the chunk (D-008).
 
   Step 1 (CHN-01)  decompose user query into focused sub-questions

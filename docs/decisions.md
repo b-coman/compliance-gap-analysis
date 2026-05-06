@@ -337,3 +337,44 @@ Both stub files (`tests/test_smoke.py`, `tests/test_typing.py`) exist from PR #3
 **Decided:** Override decision #7 to scope Maya as a drafting persona for test queries; remove her from any user-facing artefact (UI, report, demo).
 **Reason:** Reconciles Daria's earlier "no demo persona" instruction with Bogdan's pre-built queries that lean on a single coherent voice — keeps the query quality, drops the on-screen exposure.
 **Updates `build-notes.md`?** No (build-notes never named a persona).
+
+### Greedy (deterministic) decoding for the simplified architecture's LLM call — 2026-05-06
+**Decided:** Configure local LLM generation with `do_sample=False` and `repetition_penalty=1.05`; explicitly do not use `temperature`, `top_p`, `top_k` (the model's `generation_config.json` ships with sampling defaults — they are loaded but inactive under greedy decoding).
+
+**Reason:** Compliance gap analysis requires deterministic output. Three concrete needs drove the choice:
+1. **Reproducibility for the marker.** Same query → same gap finding, every run. Stochastic outputs would weaken the report's empirical claims (we couldn't say "the system produces this output," only "the system probably produces something like this").
+2. **Cache effectiveness.** `DiskCache` keys responses on `(rendered_prompt, model_id)`. With sampling enabled, the cache would frequently disagree with fresh runs — same prompt, different output. Greedy keeps cache and live calls aligned.
+3. **Comparison across prompt iterations.** Testing V3 vs V4 (see `docs/test-passes/v4-qwen-1.5b-prompt-hygiene.md`) required attributing every output difference to the prompt change. Sampling noise would have masked or fabricated differences.
+
+The trade-off is that greedy decoding can produce slightly stilted or repetitive phrasing on some queries. We mitigate with `repetition_penalty=1.05` (soft discouragement of exact repetition without breaking grounded quotes from the chunks).
+
+**Considered alternative:** sampling enabled with `temperature=0.1` (low randomness, mostly-deterministic). Would produce slightly more natural phrasing for a creative-writing task. Rejected because compliance work prioritises consistency over phrasing variety; the cost of unreproducible output exceeds the benefit of varied phrasing.
+
+**Side effect — HF transformers warning.** Each generation call prints `"The following generation flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']"`. This is HF being polite: Qwen's `generation_config.json` ships with sampling defaults that we deliberately ignore. The warning is cosmetic; output is unaffected. We can suppress by passing `temperature=None, top_p=None, top_k=None` explicitly to `model.generate()` — deferred as low-priority polish.
+
+**Updates `build-notes.md`?** No (build-notes describes architecture, not generation parameters; parameters belong in the report's appendix per the brief's implementation-detail requirement).
+
+**For Daria's report appendix and viva:**
+- Report appendix: parameter table listing `do_sample=False`, `repetition_penalty=1.05`, brief rationale (deterministic for reproducibility).
+- Likely viva probe: *"why did you set temperature to zero?"* or *"did you consider letting the model be more creative?"* — the answer maps directly to the three reasons above (reproducibility, cache effectiveness, evaluation isolation), with the trade-off (slight phrasing stiffness vs sampling noise) acknowledged. ~60-second answer.
+
+### Colab as evaluation environment, local CPU as production demo — 2026-05-06
+**Decided:** The simplified path runs in two environments: (a) local CPU is the production demo path with `Qwen/Qwen2.5-1.5B-Instruct` as default; (b) Colab GPU is the evaluation environment for testing larger models (e.g. `Qwen/Qwen2.5-7B-Instruct`). The model identifier is read from a `MODEL_ID` environment variable; everything else is identical across environments. The Colab notebook (`colab/run_simplified_colab.ipynb`) clones the repo, sets `MODEL_ID`, and runs the same `analyse()` function. Outputs feed `docs/test-passes/` for cross-model comparison.
+
+**Reason:** Two needs pulled in opposite directions:
+1. **Demo reliability.** The local Qwen 1.5B path is offline, deterministic, and free. It runs without API keys, free-tier daily limits, or network dependencies — the demo on the day will not fail because of an external service. This is the production path.
+2. **Empirical capability assessment.** V4's negative finding (`docs/test-passes/v4-qwen-1.5b-prompt-hygiene.md`) showed that prompt design cannot fix the FRIA leak at 1.5B scale; the cause is training-data prior. Testing whether scale alone fixes it requires running 7B+ models, which the local CPU cannot accommodate.
+
+Splitting the codebase across environments would have created sync drift. Splitting the LLM call across machines (local retrieval + Colab-hosted LLM via tunnel) would have added networking complexity and ephemeral failure modes. Keeping one codebase, one entry point, and one config knob (`MODEL_ID`) gives both environments without forking the architecture.
+
+**Considered alternative — port the LLM call to a Colab-hosted endpoint** (ngrok / Cloudflare tunnel exposing a small FastAPI wrapper). Rejected: tunnel keep-alive, auth, network round-trips, and ephemeral session lifetimes added more risk than the simplification was worth for a master's project. The notebook approach has the same effect (use Colab's GPU) without the moving parts.
+
+**Considered alternative — commit pre-computed BGE embeddings to the repo** so Colab sessions skip the ~3 min re-encode. Rejected: BGE-large produces 1024-dim float32 vectors per chunk; binary blobs in git are awkward to review and bloat the repo for a 3-minute saving on infrequent evaluation runs. If iteration friction grows, mounting Google Drive and caching embeddings there is the documented escalation (see `colab/README.md`).
+
+**Side effect — model-id sync.** `LLM_MODEL_ID` is read from `os.environ` once at module import. Setting `MODEL_ID` after `import src.simplified` has no effect; the notebook sets it before importing. The order is documented in the `run_simplified_colab.ipynb` cell sequence.
+
+**Updates `build-notes.md`?** No (build-notes describes architecture, not deployment environments).
+
+**For Daria's report appendix and viva:**
+- Report appendix: brief description of the two-environment workflow and the rationale for keeping local as demo. Explains the design choice that lets her run on a Colab GPU for stronger empirical claims while keeping the demo reliable.
+- Likely viva probe: *"why didn't you just use the bigger model everywhere?"* — the answer is hardware reality (Qwen 7B OOMs on consumer CPUs in fp32) plus demo reliability (no Colab dependency on the day). ~30-second answer.
