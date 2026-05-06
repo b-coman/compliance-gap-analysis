@@ -101,6 +101,28 @@ SYSTEM_PROMPT = (
 )
 
 
+# Gemma 3 prompt variant.
+#
+# Per Google's official Gemma 3 launch documentation
+# (https://huggingface.co/blog/gemma3): "Gemma 3 uses very short system prompts
+# followed by user prompts." The example shown there is a single sentence.
+# Our V4 SYSTEM_PROMPT (5 numbered rules + role description) is substantially
+# longer than what Gemma 3's instruction-tuning was optimised for, and we
+# observed empirically that Gemma 3-4B partially under-weighted those rules
+# on Q5 (accepted Novara's self-classification, missed the FRIA-vs-DPIA
+# distinction that Qwen 3B and 7B handled correctly with the same prompt).
+# Hypothesis: rules in a long system prompt have less behavioural pull on
+# Gemma 3 than rules placed in the user turn. This Gemma-specific variant
+# tests that hypothesis: short role-only system prompt, rules in the user
+# turn ahead of the question. See `docs/test-passes/v4-gemma-3-4b-colab.md`
+# for the empirical motivation; results from this variant will be captured
+# in a follow-up test pass.
+
+GEMMA3_SYSTEM_PROMPT = (
+    "You are a compliance research assistant for a Head of AI Compliance."
+)
+
+
 def _user_message(query: str, reg_text: str, dep_text: str) -> str:
     return f"""QUESTION: {query}
 
@@ -125,6 +147,58 @@ Now produce your assessment using this exact format:
 ### What the policy says
 
 ### Gap"""
+
+
+def _user_message_gemma3(query: str, reg_text: str, dep_text: str) -> str:
+    """User message for Gemma 3: rules at the top, then question + chunks +
+    template. Pairs with `GEMMA3_SYSTEM_PROMPT` (role-only).
+
+    Same content as `_user_message` plus the 5 V4 rules prepended. Topic-
+    specific examples (e.g., "fundamental rights impact assessment") removed
+    from the rule text to avoid biasing Gemma toward those phrases — same
+    hygiene principle that motivated V3 → V4 for the Qwen system prompt.
+    """
+    return f"""Follow these rules in your response:
+1. Cite chunk IDs verbatim in [square brackets].
+2. Quote key legal phrases from the law passages verbatim. Do not paraphrase.
+3. Do not invent obligations or policy provisions not present in the passages provided.
+4. Stay on the specific topic in the question. Different legal frameworks have different obligations even when topics seem similar; do not conflate them.
+5. If the policy passages do not address the obligation in the question, say so directly. Do not stretch unrelated content to fit.
+
+QUESTION: {query}
+
+LAW PASSAGES:
+{reg_text}
+
+POLICY PASSAGES:
+{dep_text}
+
+Output your assessment in three Markdown sections. Instructions for each section:
+
+- "What the law requires": one sentence stating the specific obligation from the law passages. Use verbatim legal phrases. Begin with the relevant law chunk_id in square brackets.
+
+- "What the policy says": one sentence describing what the policy says about this obligation. Cite policy chunk_ids in square brackets if relevant. If the policy does not address the obligation, write a complete sentence stating which specific obligation is missing — name it in plain English. Do not output bracketed placeholders or instruction text.
+
+- "Gap": one sentence directly stating the gap between the law and the policy, citing the relevant law chunk_id in square brackets.
+
+Now produce your assessment using this exact format:
+
+### What the law requires
+
+### What the policy says
+
+### Gap"""
+
+
+def _get_prompts(model_id: str, query: str, reg_text: str, dep_text: str) -> tuple[str, str]:
+    """Return the (system_prompt, user_message) pair appropriate for the
+    selected model family. Gemma 3 gets a short system + rules-in-user
+    structure (per Google's prompt-engineering guidance); other families
+    get the standard V4 long system prompt + question-only user message.
+    """
+    if _is_gemma3(model_id):
+        return GEMMA3_SYSTEM_PROMPT, _user_message_gemma3(query, reg_text, dep_text)
+    return SYSTEM_PROMPT, _user_message(query, reg_text, dep_text)
 
 
 # ───── BGE retriever wrapper ─────
@@ -434,12 +508,21 @@ def analyse(query: str, *,
     dep_hits = retriever.retrieve(
         query, top_k=top_k_dep, corpus_filter=("DEP", "DEP_EXTRAS")
     )
-    user_msg = _user_message(query, _format_chunks(reg_hits), _format_chunks(dep_hits))
+
+    # Pick the family-appropriate prompt pair. Gemma 3 gets a short
+    # role-only system + rules-in-user; everything else gets V4
+    # (role + 5 numbered rules in system, question-only in user).
+    system_prompt, user_msg = _get_prompts(
+        LLM_MODEL_ID, query, _format_chunks(reg_hits), _format_chunks(dep_hits)
+    )
+
+    # Cache key uses the actual system_prompt for this run, not the
+    # module-level SYSTEM_PROMPT constant — otherwise Gemma 3 cache
+    # entries would collide with Qwen entries despite different prompts.
+    cache_key = system_prompt + "\n---\n" + user_msg
 
     if use_cache:
         cache = _ensure_cache()
-        # Combine system + user as the cache key prompt
-        cache_key = SYSTEM_PROMPT + "\n---\n" + user_msg
         cached = cache.get(cache_key, LLM_MODEL_ID)
         if cached is not None:
             print(f"[simplified] Cache hit")
@@ -449,12 +532,11 @@ def analyse(query: str, *,
     hint = "5-10s on GPU" if torch.cuda.is_available() else "20-30s on CPU"
     print(f"[simplified] Generating response (~{hint})...")
     t0 = time.time()
-    output = _call_llm(tokenizer, model, SYSTEM_PROMPT, user_msg)
+    output = _call_llm(tokenizer, model, system_prompt, user_msg)
     print(f"[simplified]   generated in {time.time()-t0:.1f}s")
 
     if use_cache:
         cache = _ensure_cache()
-        cache_key = SYSTEM_PROMPT + "\n---\n" + user_msg
         cache.set(cache_key, LLM_MODEL_ID, output)
 
     return output
