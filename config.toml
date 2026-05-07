@@ -45,15 +45,17 @@ moderate = 0.15  # below moderate → "weak"
 
 [ranking]
 # How to combine BGE bi-encoder and cross-encoder rankings.
-#   "rrf"          — Reciprocal Rank Fusion (default; blends both signals)
-#   "rerank_only"  — cross-encoder fully replaces BGE order
+#   "rerank_only"  — cross-encoder fully replaces BGE order (default)
+#   "rrf"          — Reciprocal Rank Fusion (blends both signals; tested and
+#                    rejected — see docs/test-passes/v4-qwen-3b-ranking-
+#                    strategies-comparison.md and docs/decisions.md)
 #   "bge_only"     — disable reranker entirely (one-stage retrieval)
 # Override via RANKING_STRATEGY env var.
-strategy = "rrf"
+strategy = "rerank_only"
 
 [ranking.rrf]
-# RRF smoothing constant. RRF score = 1/(k + rank), summed across rankings.
-# k=60 is the original-paper default; no per-query tuning required.
+# RRF smoothing constant (only relevant when strategy = "rrf").
+# k=60 is the original-paper default.
 k = 60
 
 [llm]
