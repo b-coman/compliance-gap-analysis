@@ -72,6 +72,16 @@ SNIPPET_CHARS_LIMIT = 400
 DEFAULT_MAX_NEW_TOKENS = 550
 DEFAULT_REPETITION_PENALTY = 1.05
 
+# Cross-encoder reranker (optional, controlled by `use_reranker` in analyse()).
+# BGE-large bi-encoder retrieves top-N initial; the reranker rescores those
+# (query, chunk) pairs and returns the top-K final. Standard two-stage RAG
+# pattern. Same family as the bi-encoder so the training-data alignment is
+# consistent. See docs/test-passes/v4-qwen-3b-reranker-colab.md for the
+# empirical motivation (Q2 wrong-article ranking + Q4 wrong-audience
+# anchoring documented in evaluation-findings.md Stage 8).
+RERANKER_MODEL_ID = "BAAI/bge-reranker-base"
+DEFAULT_TOP_K_INITIAL = 10  # Number of candidates retrieved for reranker input
+
 
 # ───── Prompt templates ─────
 #
@@ -239,6 +249,79 @@ class _BGERetriever:
         scores = (filtered @ q_emb).tolist()
         top = sorted(enumerate(scores), key=lambda x: -x[1])[:top_k]
         return [(self.chunks[idx[i]], float(s)) for i, s in top]
+
+
+# ───── Reranker (cross-encoder, optional) ─────
+
+# Lazy-loaded singleton. See _ensure_reranker() in the singletons section.
+_reranker = None
+
+
+def _rerank_with_evidence(query: str, initial_hits: list, top_k: int) -> tuple[list, list]:
+    """Rescore retrieved chunks using a cross-encoder, return final hits +
+    full audit trail.
+
+    The bi-encoder (BGE-large) embeds query and chunk independently and
+    compares; cross-encoder reads (query, chunk) together and attends to
+    token-level interactions, typically producing more accurate ranking.
+    Standard two-stage RAG pattern.
+
+    Returns:
+        final_hits: [(chunk, rerank_score)] — top_k ordered by rerank score.
+            Same shape as `_BGERetriever.retrieve` output, drops in cleanly
+            wherever existing code consumed retriever hits.
+        evidence:   [(chunk, bge_score, rerank_score, initial_rank, final_rank)]
+            — full audit trail for each chunk that survived to top_k. Used
+            by `_format_evidence` to render the retrieval footer.
+    """
+    if not initial_hits:
+        return [], []
+
+    reranker = _ensure_reranker()
+    pairs = [(query, c.chunk_text) for c, _ in initial_hits]
+    rerank_scores = reranker.predict(pairs)
+
+    extended = [
+        (chunk, float(bge), float(rs), initial_rank)
+        for initial_rank, ((chunk, bge), rs) in enumerate(
+            zip(initial_hits, rerank_scores), start=1
+        )
+    ]
+    extended.sort(key=lambda x: -x[2])  # descending by rerank score
+
+    final_hits = [(c, rs) for c, _bge, rs, _ir in extended[:top_k]]
+    evidence = [
+        (chunk, bge, rs, initial_rank, final_rank)
+        for final_rank, (chunk, bge, rs, initial_rank) in enumerate(
+            extended[:top_k], start=1
+        )
+    ]
+    return final_hits, evidence
+
+
+def _format_evidence(reg_evidence: list, dep_evidence: list) -> str:
+    """Render the retrieval audit trail as a readable footer appended to
+    the LLM output. Each line shows: rank, chunk_id, BGE score, reranker
+    score, initial → final rank (so a marker can see what the reranker did).
+    """
+    lines = ["---", "Retrieval evidence (after cross-encoder reranking):"]
+
+    def _block(label: str, evidence: list) -> list[str]:
+        block = ["", f"{label}:"]
+        for chunk, bge, rs, initial_rank, final_rank in evidence:
+            arrow = (
+                f"rank {initial_rank} → {final_rank}"
+                if initial_rank != final_rank else f"rank {initial_rank} (unchanged)"
+            )
+            block.append(
+                f"  {final_rank}. {chunk.chunk_id}  "
+                f"(BGE {bge:.3f} / rerank {rs:.2f}, {arrow})"
+            )
+        return block
+
+    lines += _block("Law passages (final top-5)", reg_evidence)
+    lines += _block("Policy passages (final top-5)", dep_evidence)
+    return "\n".join(lines)
 
 
 # ───── Chunk formatting for the prompt ─────
@@ -492,22 +575,70 @@ def _ensure_cache() -> DiskCache:
     return _llm_cache
 
 
+def _ensure_reranker():
+    """Lazy-load the cross-encoder reranker once per process."""
+    global _reranker
+    if _reranker is not None:
+        return _reranker
+    from sentence_transformers import CrossEncoder
+    print(f"[simplified] Loading reranker ({RERANKER_MODEL_ID}) on {_device()}...")
+    t0 = time.time()
+    _reranker = CrossEncoder(RERANKER_MODEL_ID, device=_device())
+    print(f"[simplified]   reranker loaded in {time.time()-t0:.1f}s")
+    return _reranker
+
+
 # ───── Public API ─────
 
 def analyse(query: str, *,
             top_k_reg: int = DEFAULT_TOP_K_REG,
             top_k_dep: int = DEFAULT_TOP_K_DEP,
-            use_cache: bool = True) -> str:
+            use_cache: bool = True,
+            use_reranker: bool = True,
+            show_evidence: bool = True) -> str:
     """Run the simplified compliance gap analysis on `query` and return
     the LLM's text output. Single LLM call.
 
+    Args:
+        query: the compliance question.
+        top_k_reg / top_k_dep: number of regulation / deployer chunks
+            ultimately passed to the LLM. With reranking, BGE retrieves
+            DEFAULT_TOP_K_INITIAL (10) candidates first; the reranker picks
+            the final top_k from those. Without reranking, BGE retrieves
+            top_k directly.
+        use_cache: read/write the LLM response cache.
+        use_reranker: enable two-stage retrieval (BGE bi-encoder + cross-
+            encoder rescoring). Default True. Set False to ablate the
+            reranker for empirical comparison.
+        show_evidence: append a retrieval audit trail to the output text
+            (chunk IDs, BGE scores, rerank scores, rank changes). Only
+            takes effect when use_reranker=True. Default True so test-pass
+            documents capture the audit trail; demo paths can pass
+            show_evidence=False for clean output.
+
     Caches LLM responses on (rendered_prompt, model_id) so re-runs are fast.
+    Cache key naturally diverges between reranker-on and reranker-off
+    because the rendered prompt depends on the chunks selected.
     """
     retriever = _ensure_retriever()
-    reg_hits = retriever.retrieve(query, top_k=top_k_reg, corpus_filter="REG")
-    dep_hits = retriever.retrieve(
-        query, top_k=top_k_dep, corpus_filter=("DEP", "DEP_EXTRAS")
-    )
+
+    if use_reranker:
+        # Wider initial retrieval, then cross-encoder rescore to final top_k.
+        reg_initial = retriever.retrieve(
+            query, top_k=DEFAULT_TOP_K_INITIAL, corpus_filter="REG"
+        )
+        dep_initial = retriever.retrieve(
+            query, top_k=DEFAULT_TOP_K_INITIAL, corpus_filter=("DEP", "DEP_EXTRAS")
+        )
+        reg_hits, reg_evidence = _rerank_with_evidence(query, reg_initial, top_k_reg)
+        dep_hits, dep_evidence = _rerank_with_evidence(query, dep_initial, top_k_dep)
+    else:
+        reg_hits = retriever.retrieve(query, top_k=top_k_reg, corpus_filter="REG")
+        dep_hits = retriever.retrieve(
+            query, top_k=top_k_dep, corpus_filter=("DEP", "DEP_EXTRAS")
+        )
+        reg_evidence = None
+        dep_evidence = None
 
     # Pick the family-appropriate prompt pair. Gemma 3 gets a short
     # role-only system + rules-in-user; everything else gets V4
@@ -519,6 +650,7 @@ def analyse(query: str, *,
     # Cache key uses the actual system_prompt for this run, not the
     # module-level SYSTEM_PROMPT constant — otherwise Gemma 3 cache
     # entries would collide with Qwen entries despite different prompts.
+    # Rendered prompt depends on chunks → reranker-on/off naturally cache-separated.
     cache_key = system_prompt + "\n---\n" + user_msg
 
     if use_cache:
@@ -534,6 +666,9 @@ def analyse(query: str, *,
     t0 = time.time()
     output = _call_llm(tokenizer, model, system_prompt, user_msg)
     print(f"[simplified]   generated in {time.time()-t0:.1f}s")
+
+    if show_evidence and reg_evidence is not None and dep_evidence is not None:
+        output = output.rstrip() + "\n\n" + _format_evidence(reg_evidence, dep_evidence)
 
     if use_cache:
         cache = _ensure_cache()
