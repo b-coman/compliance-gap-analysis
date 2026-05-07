@@ -120,6 +120,31 @@ Each step is a discrete unit of work. **Tell Claude Code one step at a
 time.** After Claude Code finishes a step, verify it (the "How to verify"
 line tells you what to look for), then commit before moving on.
 
+### Step 0 — Create a feature branch
+
+**Why:** Don't work directly on `main`. A feature branch means failures
+are contained and you can bail out cleanly with `git checkout main` if
+anything goes wrong. At the end you'll merge via a self-PR (a pull
+request from your feature branch into your own `main`), which gives
+you a chance to review the full diff before it lands on the canonical
+branch.
+
+**Prompt:**
+```
+Before we start the work, create and switch to a new feature branch
+called `phase-1-simplified-path`. We will do all the implementation
+on this branch and only merge to main at the end via a pull request.
+Confirm the branch is created and active before we proceed.
+```
+
+**How to verify:**
+- `git branch --show-current` returns `phase-1-simplified-path`
+- `git status` shows you're on a clean tree
+
+**No commit at this step.** The branch itself is the artefact.
+
+---
+
 ### Step 1 — Add `config.toml` at the repo root
 
 **What:** A single TOML file that holds all tunable defaults.
@@ -385,6 +410,29 @@ what to check at the end.
 
 ---
 
+### Step 11 — Open a self-PR and merge into your `main`
+
+**What:** Once everything is verified, you merge your feature branch
+into your `main` via a pull request. The PR is "self-reviewed" — it
+gives you a chance to read the full diff before it lands on the
+canonical branch.
+
+**Prompt:**
+```
+Push the phase-1-simplified-path branch to GitHub and create a pull
+request from this branch into main of dariacoman/compliance-gap-analysis.
+Use the title "Phase 1A: simplified path implementation" and a body
+that summarises what was added. Show me the PR URL when it's open.
+I'll review it on GitHub and merge it myself.
+```
+
+**How to verify:**
+- A pull request is open at github.com/dariacoman/compliance-gap-analysis/pulls
+- You can read the diff in the PR view and it matches what you expected
+- After you merge: `git checkout main && git pull origin main` brings your local main up to date
+
+**Phase 1A is now complete.**
+
 ## How to use Claude Code well
 
 You don't need to know Python. You do need to know how to drive Claude
@@ -432,10 +480,12 @@ Code effectively.
 
 ---
 
-## Acceptance checklist (when you're done)
+## Acceptance checklist (Phase 1A complete)
 
-After all 9 (or 10) steps complete, your repo should pass this checklist:
+When this list is fully ticked, Phase 1A is complete. You move on to
+Phase 1B (Colab demo polish) with Bogdan.
 
+- [ ] You're working on the `phase-1-simplified-path` feature branch (not directly on `main`)
 - [ ] `config.toml` exists at the repo root
 - [ ] `src/simplified.py` exists and `from src.simplified import analyse` works
 - [ ] `src/ui/simple_chat.py` exists
@@ -449,22 +499,189 @@ After all 9 (or 10) steps complete, your repo should pass this checklist:
 - [ ] `docs/test-passes/` contains 5 test pass docs + a README
 - [ ] `docs/architecture-diagrams.html` opens in a browser
 - [ ] Local demo: `PYTHONPATH=$PWD python -m src.ui.simple_chat` runs and the FRIA query produces a 3-section output with retrieval evidence
-- [ ] All commits pushed to your branch
+- [ ] Pull request opened from `phase-1-simplified-path` into `main`, reviewed, and merged
+- [ ] Your local `main` is now up to date with the merged work
 
-If all 14 boxes tick, the simplified path is fully ported and verified
-in your repo. You can then open a PR to your own `main` branch (or
-merge directly), document it, and move on to writing the report.
+If all 16 boxes tick, **Phase 1A is complete.** Tell Bogdan; you'll
+move on to Phase 1B (Colab demo polish) together.
 
 ---
 
-## After implementation: what's next
+## What comes after Phase 1A
 
-Once the simplified path is in your `main`:
+This guide gets you to the end of **Phase 1A** — simplified path ported
+into your existing repo, working locally. There are three more phases
+before submission.
 
-1. **Practice the demo.** Run `python -m src.ui.simple_chat` a few times
-   so you're fluent with the CLI on demo day. Try Q5 (FRIA — the canary
-   silence target). Ask the gap finding to a couple of compliance
-   officers if you can; verify they understand the output.
+### The full four-phase roadmap
+
+| Phase | What | Repo | Approximate effort |
+|---|---|---|---|
+| **Phase 1A** | Port simplified path into your existing repo, on a feature branch (this guide) | `dariacoman/compliance-gap-analysis` | Half day to a day |
+| **Phase 1B** | Polish the Colab notebook for live demo (per-question cell, not batch) | Same repo | Half day |
+| **Phase 2** | Create a new submission repo. Copy in only the simplified path + supporting evaluation docs. Drop the chain code, the ICO operational corpus, and chain-era artifacts. Add README.md, LICENSE, etc. | **New repo:** name TBD with Bogdan | Half day |
+| **Phase 3** | Demo-day prep: practice runs, record fallback video, finalise README + LICENSE | Submission repo | Final week before submission |
+
+The key insight: **two repos by the end.**
+- Your **existing repo** stays as your *research repo* — keeps everything (chain + simplified, full corpus, full doc history) for your own future work.
+- A **new submission repo** is born in Phase 2 — clean simplified path + evaluation docs only, written for the marker.
+
+### Phase 1B preview — per-question Colab cell
+
+The current Colab notebook has cell 13 that batches all 5 queries
+through `analyse()` in a loop. Fine for capturing test-pass evidence;
+not great for a live demo where you want to ask one question, show the
+result, then move on to the next.
+
+For Phase 1B we'll add a cell like this near the top of the notebook,
+intended to be edited and re-run during the demo:
+
+```python
+# Edit the query below, then press Shift+Enter to run.
+# This cell uses the same analyse() function as the batch run.
+
+query = """Have we performed a Fundamental Rights Impact Assessment under
+EU AI Act Article 27 for TalentLens as a deployer of an Annex III
+high-risk system?"""
+
+print(analyse(query))
+```
+
+Daria pastes the next question, hits Shift+Enter, output appears below.
+No mouse work, just keyboard. The audience watches you compose the
+question and read the answer.
+
+We'll do this together as a separate iteration after Phase 1A lands —
+not part of this guide.
+
+### Phase 2 preview — the submission repo
+
+Bogdan and you will agree on the new repo name (something like
+`dariacoman/inst0100-compliance-gap-analysis-submission` or
+`dariacoman/talentlens-compliance-gap`). Then you'll drive Claude Code
+through copying files into the new repo and dropping chain-era
+artifacts.
+
+**What goes into the submission repo:**
+
+```
+.gitignore
+LICENSE                          # MIT default; check UCL guidance
+README.md                        # marker-facing; written from scratch in Phase 2
+requirements.txt
+config.toml
+src/
+  simplified.py
+  ui/simple_chat.py
+  retrieval.py                   # chunk-loading utility (will be slimmed in Phase 2)
+  ingestion.py                   # corpus loading (still required)
+  llm/cache.py                   # DiskCache utility
+  __init__.py
+corpus/
+  manifest.json                  # filtered: ICO entries removed
+  regulation/
+  deployer/
+  deployer-extras/
+colab/
+  run_simplified_colab.ipynb     # Phase 1B-polished version
+  README.md
+docs/
+  evaluation-findings.md
+  decisions.md
+  test-passes/
+  architecture-diagrams.html
+  architecture-diagrams-slides.html
+  test-queries.md
+  intentional-gaps.md
+  ai-act-extraction-notes.md
+```
+
+**What gets dropped (does NOT go into the submission repo):**
+
+- `src/chain.py` (the chain code we evaluated and moved past)
+- `src/schema.py` (chain output schema)
+- `src/llm/adapters.py`, `src/llm/base.py`, `src/llm/client.py`,
+  `src/llm/prompts.py`, `src/llm/routing.py` (the chain LLM cluster)
+- `corpus/operational/ico-*` (ICO operational guidance — never used by
+  the simplified path; excluded at query time)
+- `tests/test_chain*.py` and any chain-specific tests
+- `compliance-gap-analysis-spec.md` (original spec was for the chain — superseded)
+- `v2_corpus_specification.md` (chain-era corpus spec)
+- `docs/phase-1-simplified-path.md` (transition doc — keep or drop, your call)
+- `docs/implementation-guide-for-daria.md` (this guide — completed its purpose)
+
+**What changes during Phase 2:**
+
+- `src/simplified.py`: the deferred `_ensure_retriever()` cleanup that
+  drops the unnecessary MiniLM dependency (saved as a future task)
+- `src/retrieval.py`: slimmed to just chunk-loading; no chain-side
+  retriever class needed
+- `corpus/manifest.json`: filtered to remove the ICO operational entries
+
+**Phase 2 README.md:** purpose-built for the marker. Rough shape:
+
+```markdown
+# Compliance Gap Analysis — INST0100 Submission
+
+A retrieval-augmented compliance gap analysis system for AI Act + GDPR
+deployer obligations. Single-call architecture: BGE-large bi-encoder
+retrieval + cross-encoder reranking + local LLM gap finding.
+
+## Quick start
+
+    python -m venv .venv && source .venv/bin/activate
+    pip install -r requirements.txt
+    PYTHONPATH=$PWD python -m src.ui.simple_chat
+
+Type a compliance question. Get a 3-section gap analysis with retrieval
+evidence.
+
+## What we built and why
+
+See [docs/evaluation-findings.md](docs/evaluation-findings.md) — 9
+stages mapping the empirical journey from chain to simplified path.
+Strongest material for the Critical Analysis dimension.
+
+## Architecture
+
+[docs/architecture-diagrams.html](docs/architecture-diagrams.html) —
+visual reference. Open in a browser.
+
+## Submission notes for the marker
+
+- Demo: Colab notebook in `colab/`
+- Local fallback: command above
+- Empirical evidence: 5 test passes in `docs/test-passes/`
+- Design rationale: `docs/decisions.md`
+```
+
+### Phase 3 preview — demo-day backup plan
+
+Three layers of fallback so you're never live-coding under pressure:
+
+1. **Primary: Colab GPU run.** Qwen 3B + reranker, fast and demo-quality.
+2. **Fallback 1: Local Mac CPU.** Same code, `MODEL_ID=Qwen/Qwen2.5-1.5B-Instruct`. Same `analyse()` function. Test it on your Mac the day before; takes ~30 seconds per query on cold cache.
+3. **Fallback 2: Pre-recorded video.** Record a successful Colab run the night before — ~2 min showing Q5 end-to-end. If both Colab and local fail simultaneously (rare), play the recording.
+
+The codebase is identical across primary and fallback 1 — only the
+`MODEL_ID` env var differs. **One codebase, two environments, one
+recording.** Maximum reliability with minimum porting risk.
+
+### LICENSE note
+
+For the submission repo's `LICENSE` file, MIT is the safe default for
+student work — permissive, well-known, no friction. UCL may have
+specific guidance for INST0100 submissions; **check the brief before
+defaulting.**
+
+### Reading order before the report
+
+Once Phase 1A is in your `main`:
+
+1. **Practice the demo.** Run `python -m src.ui.simple_chat` a few
+   times so you're fluent with the CLI on demo day. Try Q5 (FRIA — the
+   canary silence target). Ask the gap finding to a couple of
+   compliance officers if you can; verify they understand the output.
 
 2. **Read `docs/evaluation-findings.md` end-to-end.** This is the
    strongest material for your report's Critical Analysis dimension.
@@ -480,10 +697,12 @@ Once the simplified path is in your `main`:
    chain, and the comparison.
 
 5. **Start writing the report.** The empirical work is saturated; the
-   writing is what gets graded.
+   writing is what gets graded. Use
+   `docs/evaluation-findings.md` § "Mapping to assessment criteria"
+   as your report outline — it's already structured rubric-by-rubric.
 
-If anything is unclear, ask Bogdan. He has full context on every decision
-and every empirical finding.
+If anything is unclear, ask Bogdan. He has full context on every
+decision and every empirical finding.
 
 ---
 
