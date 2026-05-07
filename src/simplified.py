@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 import time
+import tomllib
 from pathlib import Path
 from typing import Sequence
 
@@ -53,34 +54,53 @@ from src.llm.cache import DiskCache
 
 
 # ───── Configuration ─────
+#
+# All tunables live in `config.toml` at the repo root. CONFIG is loaded once
+# at module import. Three override mechanisms with clear precedence:
+#   1. Environment variables (highest)        — env-specific overrides
+#   2. CONFIG dict mutation (session-scoped)  — cell-driven experimentation
+#   3. config.toml file (project default)     — committed defaults
+#
+# Hot-mutable (CONFIG dict edits take effect on the next analyse() call):
+#   retrieval.top_k_reg / top_k_dep / top_k_initial / snippet_chars_limit
+#   ranking.strategy, ranking.rrf.k
+#   reranker.confidence_thresholds.strong / moderate
+#   llm.generation.*
+#   output.show_evidence
+#
+# Restart-required (resolved at module import time):
+#   llm.model_id, embedding.model_id, reranker.model_id, paths.*
 
-EMBED_MODEL_ID = "BAAI/bge-large-en-v1.5"
-EMBED_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
-EMBED_CACHE_DIR = Path("embeddings_bge")
+_CONFIG_PATH = Path(__file__).parent.parent / "config.toml"
+with open(_CONFIG_PATH, "rb") as _f:
+    CONFIG: dict = tomllib.load(_f)
 
-# Default LLM. Override via the MODEL_ID environment variable when running on
-# Colab GPU (e.g. MODEL_ID=Qwen/Qwen2.5-7B-Instruct). Local CPU stays on the
-# 1.5B default; bigger models OOM or run unusably slowly on consumer CPUs.
-LLM_MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen2.5-1.5B-Instruct")
 
-LLM_CACHE_DIR = Path("llm_cache_simplified")
+def _get(path: list[str], env_var: str | None = None):
+    """Resolve a config value with optional environment-variable override.
 
-DEFAULT_TOP_K_REG = 5
-DEFAULT_TOP_K_DEP = 5
-SNIPPET_CHARS_LIMIT = 400
+    Precedence: env var > CONFIG dict (which may have been mutated at runtime).
+    Reads `CONFIG` fresh each call, so cell-driven mutations are picked up
+    on the next analyse() invocation.
+    """
+    if env_var and env_var in os.environ:
+        return os.environ[env_var]
+    cur = CONFIG
+    for k in path:
+        cur = cur[k]
+    return cur
 
-DEFAULT_MAX_NEW_TOKENS = 550
-DEFAULT_REPETITION_PENALTY = 1.05
 
-# Cross-encoder reranker (optional, controlled by `use_reranker` in analyse()).
-# BGE-large bi-encoder retrieves top-N initial; the reranker rescores those
-# (query, chunk) pairs and returns the top-K final. Standard two-stage RAG
-# pattern. Same family as the bi-encoder so the training-data alignment is
-# consistent. See docs/test-passes/v4-qwen-3b-reranker-colab.md for the
-# empirical motivation (Q2 wrong-article ranking + Q4 wrong-audience
-# anchoring documented in evaluation-findings.md Stage 8).
-RERANKER_MODEL_ID = "BAAI/bge-reranker-base"
-DEFAULT_TOP_K_INITIAL = 10  # Number of candidates retrieved for reranker input
+# Init-time constants (resolved once at module load; restart required to swap).
+# These are exposed at module level for backward compatibility — external code
+# may import them. Runtime CONFIG mutation does NOT affect them; use env vars
+# (MODEL_ID, EMBED_MODEL_ID) for per-session overrides.
+LLM_MODEL_ID       = _get(["llm", "model_id"], env_var="MODEL_ID")
+EMBED_MODEL_ID     = _get(["embedding", "model_id"], env_var="EMBED_MODEL_ID")
+EMBED_QUERY_PREFIX = _get(["embedding", "query_prefix"])
+EMBED_CACHE_DIR    = Path(_get(["paths", "embeddings_bge_cache"]))
+LLM_CACHE_DIR      = Path(_get(["paths", "llm_cache_simplified"]))
+RERANKER_MODEL_ID  = _get(["reranker", "model_id"])
 
 
 # ───── Prompt templates ─────
@@ -251,71 +271,218 @@ class _BGERetriever:
         return [(self.chunks[idx[i]], float(s)) for i, s in top]
 
 
-# ───── Reranker (cross-encoder, optional) ─────
+# ───── Reranker (cross-encoder) + ranking strategy dispatch ─────
 
 # Lazy-loaded singleton. See _ensure_reranker() in the singletons section.
 _reranker = None
 
 
-def _rerank_with_evidence(query: str, initial_hits: list, top_k: int) -> tuple[list, list]:
-    """Rescore retrieved chunks using a cross-encoder, return final hits +
-    full audit trail.
+def _rrf_combine(bge_ranking: list, rerank_ranking: list, top_k: int, k: int = 60) -> list:
+    """Reciprocal Rank Fusion. Each chunk's RRF score is the sum of
+    1/(k + rank) across the BGE and reranker rankings. k=60 is the
+    original-paper default (no per-query tuning required).
 
-    The bi-encoder (BGE-large) embeds query and chunk independently and
-    compares; cross-encoder reads (query, chunk) together and attends to
-    token-level interactions, typically producing more accurate ranking.
-    Standard two-stage RAG pattern.
+    Standard pattern when blending bi-encoder and cross-encoder signals:
+    a chunk that's strong in BGE but weak in reranker still gets credit
+    (preserved in top-K), and vice versa. Mitigates the failure mode where
+    a low-confidence reranker drops a BGE-relevant chunk out of top-K.
+
+    Args:
+        bge_ranking:    [(chunk, bge_score), ...] sorted by bge_score desc
+        rerank_ranking: [(chunk, rerank_score), ...] sorted by rerank_score desc
+        top_k: number of final hits to return
+        k: smoothing constant
+    Returns:
+        [(chunk, rrf_score), ...] sorted by rrf_score desc, length top_k
+    """
+    bge_ranks = {c.chunk_id: r for r, (c, _) in enumerate(bge_ranking, start=1)}
+    rerank_ranks = {c.chunk_id: r for r, (c, _) in enumerate(rerank_ranking, start=1)}
+    chunks_by_id = {c.chunk_id: c for c, _ in bge_ranking}
+    fallback = max(len(bge_ranking), len(rerank_ranking)) + 1
+
+    rrf_scores = []
+    for cid in chunks_by_id:
+        score = (
+            1 / (k + bge_ranks.get(cid, fallback))
+            + 1 / (k + rerank_ranks.get(cid, fallback))
+        )
+        rrf_scores.append((chunks_by_id[cid], score))
+
+    rrf_scores.sort(key=lambda x: -x[1])
+    return rrf_scores[:top_k]
+
+
+def _rerank_with_evidence(query: str, initial_hits: list, top_k: int) -> tuple[list, list]:
+    """Rescore retrieved chunks and return final hits + audit trail.
+
+    Strategy is read from CONFIG (or RANKING_STRATEGY env var). Three modes:
+      "rrf"          (default) — blend BGE rank and cross-encoder rank via RRF
+      "rerank_only"            — cross-encoder fully replaces BGE order
+      "bge_only"               — disable reranker; BGE top_k unchanged
 
     Returns:
-        final_hits: [(chunk, rerank_score)] — top_k ordered by rerank score.
-            Same shape as `_BGERetriever.retrieve` output, drops in cleanly
-            wherever existing code consumed retriever hits.
-        evidence:   [(chunk, bge_score, rerank_score, initial_rank, final_rank)]
-            — full audit trail for each chunk that survived to top_k. Used
-            by `_format_evidence` to render the retrieval footer.
+        final_hits: [(chunk, score)] — top_k for the prompt. The score is
+            BGE / RRF / rerank depending on strategy.
+        evidence:   list of dicts with keys
+            {chunk, bge_score, rerank_score (or None), bge_rank, final_rank}
+            for each chunk that survived to top_k. Drives _format_evidence().
     """
     if not initial_hits:
         return [], []
 
+    strategy = _get(["ranking", "strategy"], env_var="RANKING_STRATEGY")
+
+    if strategy == "bge_only":
+        # No reranker; just take top_k from BGE order
+        final = list(initial_hits[:top_k])
+        evidence = [
+            {
+                "chunk": c, "bge_score": float(bge), "rerank_score": None,
+                "bge_rank": i, "final_rank": i,
+            }
+            for i, (c, bge) in enumerate(final, start=1)
+        ]
+        return final, evidence
+
+    # Both rrf and rerank_only need the cross-encoder scores
     reranker = _ensure_reranker()
     pairs = [(query, c.chunk_text) for c, _ in initial_hits]
     rerank_scores = reranker.predict(pairs)
-
     extended = [
-        (chunk, float(bge), float(rs), initial_rank)
-        for initial_rank, ((chunk, bge), rs) in enumerate(
+        (chunk, float(bge), float(rs), bge_rank)
+        for bge_rank, ((chunk, bge), rs) in enumerate(
             zip(initial_hits, rerank_scores), start=1
         )
     ]
-    extended.sort(key=lambda x: -x[2])  # descending by rerank score
 
-    final_hits = [(c, rs) for c, _bge, rs, _ir in extended[:top_k]]
-    evidence = [
-        (chunk, bge, rs, initial_rank, final_rank)
-        for final_rank, (chunk, bge, rs, initial_rank) in enumerate(
-            extended[:top_k], start=1
+    if strategy == "rerank_only":
+        extended.sort(key=lambda x: -x[2])  # descending by rerank score
+        final = [(c, rs) for c, _bge, rs, _br in extended[:top_k]]
+        evidence = [
+            {
+                "chunk": c, "bge_score": bge, "rerank_score": rs,
+                "bge_rank": bge_rank, "final_rank": final_rank,
+            }
+            for final_rank, (c, bge, rs, bge_rank) in enumerate(
+                extended[:top_k], start=1
+            )
+        ]
+        return final, evidence
+
+    if strategy == "rrf":
+        bge_ranking = [(c, bge) for c, bge, _rs, _br in extended]
+        rerank_ranking = sorted(
+            [(c, rs) for c, _bge, rs, _br in extended],
+            key=lambda x: -x[1],
         )
-    ]
-    return final_hits, evidence
+        rrf_k = int(_get(["ranking", "rrf", "k"]))
+        rrf_top = _rrf_combine(bge_ranking, rerank_ranking, top_k, k=rrf_k)
+
+        # Map chunk_id back to its (bge, rerank, bge_rank) for audit
+        ext_by_id = {c.chunk_id: (bge, rs, bge_rank) for c, bge, rs, bge_rank in extended}
+        evidence = [
+            {
+                "chunk": c,
+                "bge_score": ext_by_id[c.chunk_id][0],
+                "rerank_score": ext_by_id[c.chunk_id][1],
+                "bge_rank": ext_by_id[c.chunk_id][2],
+                "final_rank": final_rank,
+            }
+            for final_rank, (c, _rrf) in enumerate(rrf_top, start=1)
+        ]
+        return rrf_top, evidence
+
+    raise ValueError(
+        f"Unknown ranking strategy: {strategy!r}. "
+        f"Expected 'rrf', 'rerank_only', or 'bge_only'."
+    )
+
+
+def _classify_confidence(max_score: float) -> str:
+    """Map max reranker score to a verbal confidence label."""
+    strong = float(_get(["reranker", "confidence_thresholds", "strong"]))
+    moderate = float(_get(["reranker", "confidence_thresholds", "moderate"]))
+    if max_score >= strong:
+        return "strong"
+    if max_score >= moderate:
+        return "moderate"
+    return "weak"
+
+
+def _pattern_label(reg_label: str, dep_label: str) -> str:
+    """Map (law confidence, policy confidence) to a pattern interpretation
+    written in plain English for a non-technical compliance reader."""
+    reg_high = reg_label in ("strong", "moderate")
+    dep_high = dep_label in ("strong", "moderate")
+    if reg_high and dep_high:
+        return "well-grounded on both sides."
+    if reg_high and not dep_high:
+        return "policy may be silent on this obligation."
+    if not reg_high and dep_high:
+        return "law side weak — query may not match the law corpus well."
+    return "low confidence on both sides — consider rephrasing the query."
 
 
 def _format_evidence(reg_evidence: list, dep_evidence: list) -> str:
-    """Render the retrieval audit trail as a readable footer appended to
-    the LLM output. Each line shows: rank, chunk_id, BGE score, reranker
-    score, initial → final rank (so a marker can see what the reranker did).
+    """Render the retrieval audit trail with two parts:
+      1. Friendly grounding summary (Option C: per-side confidence label +
+         pattern interpretation), readable to a non-technical compliance audience
+      2. Detailed per-chunk audit (BGE score, rerank score, rank changes),
+         for the test pass docs and marker probes
     """
-    lines = ["---", "Retrieval evidence (after cross-encoder reranking):"]
+    if not reg_evidence and not dep_evidence:
+        return ""
+
+    has_rerank = (
+        reg_evidence and reg_evidence[0]["rerank_score"] is not None
+    )
+    strategy = _get(["ranking", "strategy"], env_var="RANKING_STRATEGY")
+
+    lines = ["---"]
+
+    if has_rerank:
+        reg_max = max(e["rerank_score"] for e in reg_evidence)
+        dep_max = max(e["rerank_score"] for e in dep_evidence)
+        reg_label = _classify_confidence(reg_max)
+        dep_label = _classify_confidence(dep_max)
+        pattern = _pattern_label(reg_label, dep_label)
+
+        lines += [
+            "Retrieval grounding:",
+            f"  Law passages:    {reg_label:<10} (max reranker confidence {reg_max:.2f})",
+            f"  Policy passages: {dep_label:<10} (max reranker confidence {dep_max:.2f})",
+            f"  Pattern: {pattern}",
+            "",
+        ]
+
+        if strategy == "rrf":
+            heading = "Detailed retrieval evidence (after RRF combining BGE + cross-encoder):"
+        else:
+            heading = "Detailed retrieval evidence (after cross-encoder reranking):"
+    else:
+        heading = "Detailed retrieval evidence (BGE only, no reranker applied):"
+
+    lines.append(heading)
 
     def _block(label: str, evidence: list) -> list[str]:
         block = ["", f"{label}:"]
-        for chunk, bge, rs, initial_rank, final_rank in evidence:
-            arrow = (
-                f"rank {initial_rank} → {final_rank}"
-                if initial_rank != final_rank else f"rank {initial_rank} (unchanged)"
+        for e in evidence:
+            chunk = e["chunk"]
+            bge = e["bge_score"]
+            rs = e["rerank_score"]
+            bge_rank = e["bge_rank"]
+            final_rank = e["final_rank"]
+
+            score_part = f"BGE {bge:.3f}"
+            if rs is not None:
+                score_part += f" / rerank {rs:.2f}"
+
+            rank_part = (
+                f"rank {bge_rank} → {final_rank}"
+                if bge_rank != final_rank else f"rank {bge_rank} (unchanged)"
             )
             block.append(
-                f"  {final_rank}. {chunk.chunk_id}  "
-                f"(BGE {bge:.3f} / rerank {rs:.2f}, {arrow})"
+                f"  {final_rank}. {chunk.chunk_id}  ({score_part}, {rank_part})"
             )
         return block
 
@@ -326,7 +493,9 @@ def _format_evidence(reg_evidence: list, dep_evidence: list) -> str:
 
 # ───── Chunk formatting for the prompt ─────
 
-def _format_chunks(hits, snippet_chars: int = SNIPPET_CHARS_LIMIT) -> str:
+def _format_chunks(hits, snippet_chars: int | None = None) -> str:
+    if snippet_chars is None:
+        snippet_chars = int(_get(["retrieval", "snippet_chars_limit"]))
     lines = []
     for chunk, _score in hits:
         text = chunk.chunk_text
@@ -412,8 +581,8 @@ def _load_llm(model_id: str = LLM_MODEL_ID):
 
 
 def _call_llm_default(tokenizer, model, system: str, user: str,
-                      max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
-                      repetition_penalty: float = DEFAULT_REPETITION_PENALTY) -> str:
+                      max_new_tokens: int | None = None,
+                      repetition_penalty: float | None = None) -> str:
     """Default inference path: Qwen, Mistral, Gemma 1/2, etc.
 
     Gemma 1 and Gemma 2 chat templates do not support a `system` role
@@ -422,6 +591,11 @@ def _call_llm_default(tokenizer, model, system: str, user: str,
     turn. Gemma 3 has its own dedicated path (handles system natively via
     content-list format) and never reaches this function.
     """
+    if max_new_tokens is None:
+        max_new_tokens = int(_get(["llm", "generation", "max_new_tokens"]))
+    if repetition_penalty is None:
+        repetition_penalty = float(_get(["llm", "generation", "repetition_penalty"]))
+
     is_gemma_legacy = (
         getattr(model.config, "model_type", "").lower().startswith("gemma")
     )
@@ -459,8 +633,8 @@ def _call_llm_default(tokenizer, model, system: str, user: str,
 
 
 def _call_llm_gemma3(processor, model, system: str, user: str,
-                     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
-                     repetition_penalty: float = DEFAULT_REPETITION_PENALTY) -> str:
+                     max_new_tokens: int | None = None,
+                     repetition_penalty: float | None = None) -> str:
     """Gemma 3 inference path.
 
     Gemma 3's chat template expects content as a list of `{"type": "text",
@@ -471,6 +645,11 @@ def _call_llm_gemma3(processor, model, system: str, user: str,
     in one call. Stop tokens are handled by the model's generation_config
     (Gemma uses `<end_of_turn>`).
     """
+    if max_new_tokens is None:
+        max_new_tokens = int(_get(["llm", "generation", "max_new_tokens"]))
+    if repetition_penalty is None:
+        repetition_penalty = float(_get(["llm", "generation", "repetition_penalty"]))
+
     messages = [
         {"role": "system", "content": [{"type": "text", "text": system}]},
         {"role": "user", "content": [{"type": "text", "text": user}]},
@@ -495,8 +674,8 @@ def _call_llm_gemma3(processor, model, system: str, user: str,
 
 
 def _call_llm(tokenizer_or_processor, model, system: str, user: str,
-              max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
-              repetition_penalty: float = DEFAULT_REPETITION_PENALTY) -> str:
+              max_new_tokens: int | None = None,
+              repetition_penalty: float | None = None) -> str:
     """Family dispatcher. Routes to the right inference path based on the
     loaded model's `config.model_type`.
     """
@@ -590,67 +769,66 @@ def _ensure_reranker():
 
 # ───── Public API ─────
 
-def analyse(query: str, *,
-            top_k_reg: int = DEFAULT_TOP_K_REG,
-            top_k_dep: int = DEFAULT_TOP_K_DEP,
-            use_cache: bool = True,
-            use_reranker: bool = True,
-            show_evidence: bool = True) -> str:
+def analyse(query: str, *, use_cache: bool = True) -> str:
     """Run the simplified compliance gap analysis on `query` and return
     the LLM's text output. Single LLM call.
 
+    All tunables (top-k, ranking strategy, generation parameters,
+    show_evidence) are read from `CONFIG` at call time. Mutate `CONFIG`
+    from a notebook cell to experiment without restarting the runtime.
+    Set environment variables (RANKING_STRATEGY, etc.) for the highest-
+    precedence override.
+
     Args:
         query: the compliance question.
-        top_k_reg / top_k_dep: number of regulation / deployer chunks
-            ultimately passed to the LLM. With reranking, BGE retrieves
-            DEFAULT_TOP_K_INITIAL (10) candidates first; the reranker picks
-            the final top_k from those. Without reranking, BGE retrieves
-            top_k directly.
         use_cache: read/write the LLM response cache.
-        use_reranker: enable two-stage retrieval (BGE bi-encoder + cross-
-            encoder rescoring). Default True. Set False to ablate the
-            reranker for empirical comparison.
-        show_evidence: append a retrieval audit trail to the output text
-            (chunk IDs, BGE scores, rerank scores, rank changes). Only
-            takes effect when use_reranker=True. Default True so test-pass
-            documents capture the audit trail; demo paths can pass
-            show_evidence=False for clean output.
 
     Caches LLM responses on (rendered_prompt, model_id) so re-runs are fast.
-    Cache key naturally diverges between reranker-on and reranker-off
-    because the rendered prompt depends on the chunks selected.
+    Cache key naturally diverges across ranking strategies because the
+    rendered prompt depends on which chunks are selected.
     """
+    # Read all hot-mutable config values at call time so cell-driven
+    # CONFIG mutations and env-var overrides take effect on the next call.
+    top_k_reg     = int(_get(["retrieval", "top_k_reg"]))
+    top_k_dep     = int(_get(["retrieval", "top_k_dep"]))
+    top_k_initial = int(_get(["retrieval", "top_k_initial"]))
+    strategy      = _get(["ranking", "strategy"], env_var="RANKING_STRATEGY")
+    show_evidence = bool(_get(["output", "show_evidence"]))
+    max_new_tokens     = int(_get(["llm", "generation", "max_new_tokens"]))
+    repetition_penalty = float(_get(["llm", "generation", "repetition_penalty"]))
+
     retriever = _ensure_retriever()
 
-    if use_reranker:
-        # Wider initial retrieval, then cross-encoder rescore to final top_k.
-        reg_initial = retriever.retrieve(
-            query, top_k=DEFAULT_TOP_K_INITIAL, corpus_filter="REG"
-        )
-        dep_initial = retriever.retrieve(
-            query, top_k=DEFAULT_TOP_K_INITIAL, corpus_filter=("DEP", "DEP_EXTRAS")
-        )
-        reg_hits, reg_evidence = _rerank_with_evidence(query, reg_initial, top_k_reg)
-        dep_hits, dep_evidence = _rerank_with_evidence(query, dep_initial, top_k_dep)
-    else:
+    if strategy == "bge_only":
+        # Single-stage retrieval — directly take BGE top_k. Build evidence
+        # for transparency (rerank_score=None, no rank changes).
         reg_hits = retriever.retrieve(query, top_k=top_k_reg, corpus_filter="REG")
         dep_hits = retriever.retrieve(
             query, top_k=top_k_dep, corpus_filter=("DEP", "DEP_EXTRAS")
         )
-        reg_evidence = None
-        dep_evidence = None
+        _, reg_evidence = _rerank_with_evidence(query, reg_hits, top_k_reg)
+        _, dep_evidence = _rerank_with_evidence(query, dep_hits, top_k_dep)
+    else:
+        # Two-stage retrieval: wider BGE retrieve, then rerank/RRF to top_k.
+        reg_initial = retriever.retrieve(
+            query, top_k=top_k_initial, corpus_filter="REG"
+        )
+        dep_initial = retriever.retrieve(
+            query, top_k=top_k_initial, corpus_filter=("DEP", "DEP_EXTRAS")
+        )
+        reg_hits, reg_evidence = _rerank_with_evidence(query, reg_initial, top_k_reg)
+        dep_hits, dep_evidence = _rerank_with_evidence(query, dep_initial, top_k_dep)
 
-    # Pick the family-appropriate prompt pair. Gemma 3 gets a short
-    # role-only system + rules-in-user; everything else gets V4
-    # (role + 5 numbered rules in system, question-only in user).
+    # Family-appropriate prompt pair. Gemma 3 gets a short role-only system
+    # + rules-in-user; everything else gets V4 (role + 5 numbered rules in
+    # system, question-only in user).
     system_prompt, user_msg = _get_prompts(
         LLM_MODEL_ID, query, _format_chunks(reg_hits), _format_chunks(dep_hits)
     )
 
-    # Cache key uses the actual system_prompt for this run, not the
-    # module-level SYSTEM_PROMPT constant — otherwise Gemma 3 cache
-    # entries would collide with Qwen entries despite different prompts.
-    # Rendered prompt depends on chunks → reranker-on/off naturally cache-separated.
+    # Cache key uses the actual system_prompt for this run (not the module
+    # SYSTEM_PROMPT constant) so Gemma and Qwen cache entries don't collide.
+    # Rendered prompt depends on chunks → ranking strategies cache-separate.
     cache_key = system_prompt + "\n---\n" + user_msg
 
     if use_cache:
@@ -664,10 +842,14 @@ def analyse(query: str, *,
     hint = "5-10s on GPU" if torch.cuda.is_available() else "20-30s on CPU"
     print(f"[simplified] Generating response (~{hint})...")
     t0 = time.time()
-    output = _call_llm(tokenizer, model, system_prompt, user_msg)
+    output = _call_llm(
+        tokenizer, model, system_prompt, user_msg,
+        max_new_tokens=max_new_tokens,
+        repetition_penalty=repetition_penalty,
+    )
     print(f"[simplified]   generated in {time.time()-t0:.1f}s")
 
-    if show_evidence and reg_evidence is not None and dep_evidence is not None:
+    if show_evidence:
         output = output.rstrip() + "\n\n" + _format_evidence(reg_evidence, dep_evidence)
 
     if use_cache:
