@@ -26,7 +26,6 @@ import numpy as np
 CORPUS_TAGS = ("REG", "OPS", "DEP", "DEP_EXTRAS")
 
 _STATIC_LABELS: dict[str, str] = {
-    "regulation/uk-gdpr-articles-relevant.txt": "UK GDPR (consolidated relevant articles)",
     "regulation/eu-ai-act-2024-1689.txt": "EU AI Act (Regulation 2024/1689)",
     "deployer/novara-ai-policy-v3.1.txt": "Novara AI Policy v3.1",
     "deployer-extras/novara-talentlens-dpia.md": "Novara TalentLens DPIA",
@@ -416,8 +415,6 @@ def _chunk_novara_extras(doc: Document) -> list[tuple[str, str, str]]:
 def _dispatch_chunker(doc: Document) -> list[tuple[str, str, str]]:
     if doc.file_path == "regulation/eu-ai-act-2024-1689.txt":
         return _chunk_ai_act(doc.chunk_text)
-    if doc.file_path == "regulation/uk-gdpr-articles-relevant.txt":
-        return []  # duplicates the per-article files; skip
     if doc.corpus_tag == "REG":
         return _chunk_gdpr_article(doc)
     if doc.corpus_tag == "OPS":

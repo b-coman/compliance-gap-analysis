@@ -65,7 +65,6 @@ def test_derive_document_id_strips_extension() -> None:
 @pytest.mark.parametrize("path,expected", [
     ("regulation/uk-gdpr-art-22.txt", "UK GDPR Article 22"),
     ("regulation/uk-gdpr-art-5.txt", "UK GDPR Article 5"),
-    ("regulation/uk-gdpr-articles-relevant.txt", "UK GDPR (consolidated relevant articles)"),
     ("regulation/eu-ai-act-2024-1689.txt", "EU AI Act (Regulation 2024/1689)"),
     ("operational/ico-main-guidance/01-about.txt", "ICO Main Guidance — About"),
     ("operational/ico-main-guidance/07-article-22-fairness.txt", "ICO Main Guidance — Article 22 fairness"),
@@ -106,10 +105,12 @@ def test_document_dataclass_is_frozen() -> None:
 # === ING-01 integration tests ============================================
 
 
-def test_load_corpus_returns_16_documents(corpus_documents) -> None:
-    # Pass 2 cleanup dropped the 26 ICO operational entries from the manifest;
-    # 16 = 10 REG + 1 DEP + 5 DEP_EXTRAS (44 - 26 - 2 PDF metadata entries).
-    assert len(corpus_documents) == 16
+def test_load_corpus_returns_15_documents(corpus_documents) -> None:
+    # Pass 2 cleanup dropped 26 ICO operational entries; the redundant
+    # uk-gdpr-articles-relevant.txt was removed in a follow-up. Remaining:
+    # 15 = 9 REG (8 GDPR articles + EU AI Act) + 1 DEP + 5 DEP_EXTRAS
+    # (44 - 26 - 1 - 2 PDF metadata entries).
+    assert len(corpus_documents) == 15
 
 
 def test_every_document_has_required_fields_populated(corpus_documents) -> None:
@@ -130,7 +131,7 @@ def test_corpus_tag_distribution(corpus_documents) -> None:
     counts: dict[str, int] = {}
     for d in corpus_documents:
         counts[d.corpus_tag] = counts.get(d.corpus_tag, 0) + 1
-    assert counts == {"REG": 10, "DEP": 1, "DEP_EXTRAS": 5}
+    assert counts == {"REG": 9, "DEP": 1, "DEP_EXTRAS": 5}
 
 
 def test_document_ids_are_unique_across_corpus(corpus_documents) -> None:
@@ -317,11 +318,6 @@ def test_recitals_are_skipped(corpus_chunks) -> None:
     for c in corpus_chunks:
         if c.document_id == "eu-ai-act-2024-1689":
             assert "Whereas:" not in c.chunk_text, f"recital header in {c.chunk_id}"
-
-
-def test_consolidated_gdpr_file_produces_zero_chunks(corpus_chunks) -> None:
-    doc_chunks = [c for c in corpus_chunks if c.document_id == "uk-gdpr-articles-relevant"]
-    assert doc_chunks == []
 
 
 def test_ai_act_article_27_is_a_distinct_chunk(corpus_chunks) -> None:

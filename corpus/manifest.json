@@ -168,15 +168,5 @@
     "source_url": "https://gdpr-info.eu/art-9-gdpr/",
     "doc_pub_date": "\u2014",
     "fetch_date": "2026-05-02"
-  },
-  {
-    "path": "regulation/uk-gdpr-articles-relevant.txt",
-    "corpus_tag": "REG",
-    "size_bytes": 34539,
-    "sha256_short": "0bc97340c9f29162",
-    "word_count": 5050,
-    "source_url": "gdpr-info.eu (consolidated)",
-    "doc_pub_date": "2018-05-25",
-    "fetch_date": "2026-05-02"
   }
 ]
