@@ -17,10 +17,8 @@ from src.ingestion import (
     _cache_path,
     _chunk_ai_act,
     _chunk_id,
-    _chunk_ico_prose,
     _chunk_novara_extras,
     _chunk_novara_policy,
-    _cluster_sentences,
     _derive_corpus_tag,
     _derive_document_id,
     _derive_section_reference,
@@ -42,8 +40,6 @@ from src.ingestion import (
 @pytest.mark.parametrize("path,expected", [
     ("regulation/uk-gdpr-art-22.txt", "REG"),
     ("regulation/eu-ai-act-2024-1689.txt", "REG"),
-    ("operational/ico-main-guidance/01-about.txt", "OPS"),
-    ("operational/ico-audit-framework/10-human-review.txt", "OPS"),
     ("deployer/novara-ai-policy-v3.1.txt", "DEP"),
     ("deployer-extras/novara-talentlens-dpia.md", "DEP_EXTRAS"),
 ])
@@ -66,10 +62,6 @@ def test_derive_document_id_strips_extension() -> None:
     ("regulation/uk-gdpr-art-22.txt", "UK GDPR Article 22"),
     ("regulation/uk-gdpr-art-5.txt", "UK GDPR Article 5"),
     ("regulation/eu-ai-act-2024-1689.txt", "EU AI Act (Regulation 2024/1689)"),
-    ("operational/ico-main-guidance/01-about.txt", "ICO Main Guidance — About"),
-    ("operational/ico-main-guidance/07-article-22-fairness.txt", "ICO Main Guidance — Article 22 fairness"),
-    ("operational/ico-genai-consultation/01-executive-summary.txt", "ICO GenAI Consultation — Executive summary"),
-    ("operational/ico-audit-framework/10-human-review.txt", "ICO Audit Framework — Human review"),
     ("deployer/novara-ai-policy-v3.1.txt", "Novara AI Policy v3.1"),
     ("deployer-extras/novara-talentlens-dpia.md", "Novara TalentLens DPIA"),
 ])
@@ -84,12 +76,6 @@ def test_chunk_id_is_deterministic() -> None:
 def test_chunk_id_strips_extension() -> None:
     assert _chunk_id("regulation/uk-gdpr-art-22.txt") == "regulation/uk-gdpr-art-22"
     assert _chunk_id("deployer-extras/novara-talentlens-dpia.md") == "deployer-extras/novara-talentlens-dpia"
-
-
-def test_chunk_id_distinguishes_same_stem_in_different_subfolders() -> None:
-    a = _chunk_id("operational/ico-main-guidance/03-transparency.txt")
-    b = _chunk_id("operational/ico-audit-framework/03-transparency.txt")
-    assert a != b
 
 
 def test_document_dataclass_is_frozen() -> None:
@@ -188,16 +174,6 @@ def test_section_chunk_id_concatenates_path_and_anchor() -> None:
     assert _section_chunk_id("regulation/uk-gdpr-art-22", "para-3") == "regulation/uk-gdpr-art-22#para-3"
 
 
-def test_cluster_sentences_respects_target_size() -> None:
-    sents = tuple(["This sentence has roughly thirty characters." for _ in range(20)])
-    clusters = _cluster_sentences(sents, target_tokens=50)
-    assert all(len(c) >= 1 for c in clusters)
-    # Each cluster's total token estimate is bounded; allow 1.5x slack for greedy.
-    for cluster in clusters:
-        joined = " ".join(cluster)
-        assert _estimate_tokens(joined) <= 50 * 2  # generous upper bound
-
-
 def test_sentences_returns_tuple() -> None:
     out = _sentences("First sentence. Second sentence. Third one.")
     assert isinstance(out, tuple)
@@ -289,7 +265,6 @@ def test_chunk_corpus_per_bucket_distribution_sensible(corpus_chunks) -> None:
     assert counts.get("REG", 0) >= 10
     assert counts.get("DEP", 0) >= 5
     assert counts.get("DEP_EXTRAS", 0) >= 10
-    assert counts.get("OPS", 0) == 0  # OPS bucket fully evicted
 
 
 def test_no_chunk_straddles_two_articles(corpus_chunks) -> None:

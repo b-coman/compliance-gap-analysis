@@ -1,16 +1,13 @@
-"""ING-01, ING-02, ING-03 — corpus ingestion.
+"""Corpus ingestion — corpus loading, chunking, and embedding.
 
-Loads the four-bucket corpus (regulation, ICO operational guidance,
-Novara deployer policy, Novara deployer-extras) into typed Document
-records (ING-01); refines those into article/§/section-level Chunks
-with per-chunk sentence breakdown for FLEX-3 aggregation (ING-02);
-embeds chunks with `multi-qa-MiniLM-L6-cos-v1` and caches them on
-disk under `embeddings/{model_name}.npz` (ING-03).
+Loads the three-bucket corpus (regulation, Novara deployer policy,
+Novara deployer-extras) from `corpus/manifest.json` into typed
+Document records, then refines those into article/§/section-level
+Chunks with per-chunk sentence breakdown.
 
 Pre-conditions: `corpus/manifest.json` complete, hashes verified
-(`scripts/validate_corpus.py` passes).
+(`scripts/validate_corpus.py`).
 
-Reference: compliance-gap-analysis-spec.md § Group: Ingestion.
 AI Act extraction observations: docs/ai-act-extraction-notes.md.
 """
 
@@ -23,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-CORPUS_TAGS = ("REG", "OPS", "DEP", "DEP_EXTRAS")
+CORPUS_TAGS = ("REG", "DEP", "DEP_EXTRAS")
 
 _STATIC_LABELS: dict[str, str] = {
     "regulation/eu-ai-act-2024-1689.txt": "EU AI Act (Regulation 2024/1689)",
@@ -33,12 +30,6 @@ _STATIC_LABELS: dict[str, str] = {
     "deployer-extras/novara-talentlens-transparency-notice.md": "Novara TalentLens Transparency Notice",
     "deployer-extras/novara-talentlens-model-intake-assessment.md": "Novara TalentLens Model Intake Assessment",
     "deployer-extras/novara-2025-ai-governance-report.md": "Novara 2025 AI Governance Report",
-}
-
-_OPS_SUB_LABELS: dict[str, str] = {
-    "ico-main-guidance": "ICO Main Guidance",
-    "ico-genai-consultation": "ICO GenAI Consultation",
-    "ico-audit-framework": "ICO Audit Framework",
 }
 
 # Regexes for ING-02 chunkers
@@ -73,8 +64,6 @@ class Document:
 def _derive_corpus_tag(file_path: str) -> str:
     if file_path.startswith("regulation/"):
         return "REG"
-    if file_path.startswith("operational/"):
-        return "OPS"
     if file_path.startswith("deployer-extras/"):
         return "DEP_EXTRAS"
     if file_path.startswith("deployer/"):
@@ -90,28 +79,16 @@ def _derive_section_reference(file_path: str) -> str:
     if file_path in _STATIC_LABELS:
         return _STATIC_LABELS[file_path]
 
-    parts = Path(file_path).parts
     stem = Path(file_path).stem
 
     if stem.startswith("uk-gdpr-art-"):
         return f"UK GDPR Article {stem.removeprefix('uk-gdpr-art-')}"
 
-    if parts[0] == "operational" and len(parts) == 3:
-        sub_label = _OPS_SUB_LABELS.get(parts[1], parts[1])
-        head, _, tail = stem.partition("-")
-        slug = tail if head.isdigit() and tail else stem
-        title = slug.replace("-", " ").capitalize()
-        return f"{sub_label} — {title}"
-
     return stem.replace("-", " ").title()
 
 
 def _chunk_id(file_path: str) -> str:
-    # Path with extension stripped. Globally unique (corpus paths are
-    # unique). Initial design used "{corpus_tag}:{document_id}" but that
-    # collided across OPS sub-folders (e.g., ico-main-guidance and
-    # ico-audit-framework both have a 03-transparency.txt with the same
-    # stem). Path-based IDs sidestep the collision and stay readable.
+    # Path with extension stripped. Globally unique by filesystem invariant.
     return str(Path(file_path).with_suffix(""))
 
 
@@ -202,27 +179,6 @@ def _strip_page_furniture(text: str) -> str:
 
 def _section_chunk_id(parent_document_id: str, anchor: str) -> str:
     return f"{parent_document_id}#{anchor}"
-
-
-def _cluster_sentences(
-    sentences: tuple[str, ...], target_tokens: int = 250
-) -> list[tuple[str, ...]]:
-    """Greedy clustering of sentences into ~target_tokens-sized groups."""
-    clusters: list[tuple[str, ...]] = []
-    current: list[str] = []
-    current_tokens = 0
-    for s in sentences:
-        s_tokens = _estimate_tokens(s)
-        if current and current_tokens + s_tokens > target_tokens:
-            clusters.append(tuple(current))
-            current = [s]
-            current_tokens = s_tokens
-        else:
-            current.append(s)
-            current_tokens += s_tokens
-    if current:
-        clusters.append(tuple(current))
-    return clusters
 
 
 def _split_long_article(body: str, max_tokens: int = 800) -> list[tuple[str, str]]:
@@ -338,18 +294,6 @@ def _chunk_gdpr_article(doc: Document) -> list[tuple[str, str, str]]:
     return [("whole", doc.section_reference, doc.chunk_text.strip())]
 
 
-def _chunk_ico_prose(doc: Document) -> list[tuple[str, str, str]]:
-    sents = _sentences(doc.chunk_text)
-    if not sents:
-        return []
-    clusters = _cluster_sentences(sents, target_tokens=250)
-    total = len(clusters)
-    return [(f"cluster-{i}",
-             f"{doc.section_reference} [{i}/{total}]",
-             " ".join(cluster))
-            for i, cluster in enumerate(clusters, 1)]
-
-
 def _chunk_novara_policy(doc: Document) -> list[tuple[str, str, str]]:
     """Split the Novara policy at numbered section/sub-section headings."""
     lines = doc.chunk_text.splitlines()
@@ -417,8 +361,6 @@ def _dispatch_chunker(doc: Document) -> list[tuple[str, str, str]]:
         return _chunk_ai_act(doc.chunk_text)
     if doc.corpus_tag == "REG":
         return _chunk_gdpr_article(doc)
-    if doc.corpus_tag == "OPS":
-        return _chunk_ico_prose(doc)
     if doc.corpus_tag == "DEP":
         return _chunk_novara_policy(doc)
     if doc.corpus_tag == "DEP_EXTRAS":
