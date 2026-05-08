@@ -335,7 +335,7 @@ Both stub files (`tests/test_smoke.py`, `tests/test_typing.py`) exist from PR #3
 
 ### Maya persona scope narrowed to drafting voice only — pre-build review (2026-05-04)
 **Decided:** Override decision #7 to scope Maya as a drafting persona for test queries; remove her from any user-facing artefact (UI, report, demo).
-**Reason:** Reconciles Daria's earlier "no demo persona" instruction with Bogdan's pre-built queries that lean on a single coherent voice — keeps the query quality, drops the on-screen exposure.
+**Reason:** Reconciles the "no demo persona" instruction with the pre-built queries that lean on a single coherent voice — keeps the query quality, drops the on-screen exposure.
 **Updates `build-notes.md`?** No (build-notes never named a persona).
 
 ### Greedy (deterministic) decoding for the simplified architecture's LLM call — 2026-05-06
