@@ -34,19 +34,27 @@ or src.llm.* (other than cache).
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 import os
+import sys
+import warnings
 
 # Silence verbose loading from HF Hub / transformers / sentence-transformers
 # so the demo output stays focused on system status and the LLM response.
-# Our own [simplified] status prints remain visible. Real errors
-# (level >= ERROR) still surface — we only suppress INFO and WARNING.
+# Our own [simplified] status prints remain visible. Real errors propagate
+# as exceptions; only routine info-level chatter is suppressed.
+#
 # Env vars must be set BEFORE importing transformers / sentence_transformers.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", category=UserWarning, module="huggingface_hub")
+warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
+warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
 
 import time
 from pathlib import Path
@@ -58,6 +66,27 @@ from sentence_transformers import SentenceTransformer
 
 from src.ingestion import chunk_corpus, load_corpus
 from src.llm.cache import DiskCache
+
+
+@contextlib.contextmanager
+def _quiet_load():
+    """Suppress stdout/stderr during third-party model loading.
+
+    sentence-transformers' BertModel LOAD REPORT and some HuggingFace Hub
+    status lines are emitted via direct print() / warnings.warn() rather
+    than Python logging, so the logger-level config above doesn't catch
+    them. This context manager redirects both streams to discard buffers
+    during the heavy load operations. Real errors still propagate as
+    exceptions; only printed chatter is silenced.
+    """
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
+    try:
+        yield
+    finally:
+        sys.stdout = saved_out
+        sys.stderr = saved_err
 
 
 # ───── Configuration (project defaults) ─────
@@ -285,7 +314,8 @@ def _ensure_retriever() -> _BGERetriever:
     chunks = chunk_corpus(load_corpus(Path("corpus/manifest.json")))
 
     print(f"[simplified] Loading BGE model ({EMBED_MODEL_ID}) on {_device()}...")
-    bge_model = SentenceTransformer(EMBED_MODEL_ID, device=_device())
+    with _quiet_load():
+        bge_model = SentenceTransformer(EMBED_MODEL_ID, device=_device())
 
     cache_file = EMBED_CACHE_DIR / "embeddings.npy"
     if cache_file.exists():
@@ -332,15 +362,16 @@ def _ensure_llm():
     from transformers import AutoModelForCausalLM, AutoTokenizer
     print(f"[simplified] Loading LLM ({LLM_MODEL_ID})...")
     t0 = time.time()
-    _llm_tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_ID)
-    if torch.cuda.is_available():
-        _llm_model = AutoModelForCausalLM.from_pretrained(
-            LLM_MODEL_ID, dtype=torch.float16
-        ).to("cuda")
-    else:
-        _llm_model = AutoModelForCausalLM.from_pretrained(
-            LLM_MODEL_ID, dtype=torch.float32
-        ).to("cpu")
+    with _quiet_load():
+        _llm_tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_ID)
+        if torch.cuda.is_available():
+            _llm_model = AutoModelForCausalLM.from_pretrained(
+                LLM_MODEL_ID, dtype=torch.float16
+            ).to("cuda")
+        else:
+            _llm_model = AutoModelForCausalLM.from_pretrained(
+                LLM_MODEL_ID, dtype=torch.float32
+            ).to("cpu")
     print(f"[simplified]   loaded in {time.time()-t0:.1f}s")
     return _llm_tokenizer, _llm_model
 
