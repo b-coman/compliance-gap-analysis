@@ -72,21 +72,36 @@ from src.llm.cache import DiskCache
 def _quiet_load():
     """Suppress stdout/stderr during third-party model loading.
 
-    sentence-transformers' BertModel LOAD REPORT and some HuggingFace Hub
-    status lines are emitted via direct print() / warnings.warn() rather
-    than Python logging, so the logger-level config above doesn't catch
-    them. This context manager redirects both streams to discard buffers
-    during the heavy load operations. Real errors still propagate as
-    exceptions; only printed chatter is silenced.
+    Some libraries (transformers' BertModel LOAD REPORT, HuggingFace Hub
+    auth warnings) emit text via direct write to OS file descriptors 1/2,
+    bypassing Python's sys.stdout/sys.stderr. To silence those, we use
+    OS-level file-descriptor redirection: dup the original fds, point
+    fds 1/2 at /dev/null during the load, then restore.
+
+    Real errors still propagate as exceptions; only printed chatter is
+    silenced. The redirection is OS-level so it catches both Python and
+    native (C/C++ extension) output.
     """
-    saved_out, saved_err = sys.stdout, sys.stderr
-    sys.stdout = io.StringIO()
-    sys.stderr = io.StringIO()
+    # Flush Python-level buffers first so anything pending isn't redirected
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
     try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        os.close(devnull_fd)
         yield
     finally:
-        sys.stdout = saved_out
-        sys.stderr = saved_err
+        # Flush any buffered output that would otherwise leak to /dev/null
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout_fd, 1)
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stdout_fd)
+        os.close(saved_stderr_fd)
 
 
 # ───── Configuration (project defaults) ─────
