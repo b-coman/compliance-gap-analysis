@@ -34,6 +34,20 @@ or src.llm.* (other than cache).
 """
 from __future__ import annotations
 
+import logging
+import os
+
+# Silence verbose loading from HF Hub / transformers / sentence-transformers
+# so the demo output stays focused on system status and the LLM response.
+# Our own [simplified] status prints remain visible. Real errors
+# (level >= ERROR) still surface — we only suppress INFO and WARNING.
+# Env vars must be set BEFORE importing transformers / sentence_transformers.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
 import time
 from pathlib import Path
 from typing import Sequence
