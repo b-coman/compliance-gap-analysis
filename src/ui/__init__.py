@@ -1,5 +1,3 @@
-"""UI cluster — Jupyter chat loop (UI-02). UI-01 Streamlit deliberately not pursued."""
-
-from src.ui.notebook_chat import chat, print_register
-
-__all__ = ["chat", "print_register"]
+"""UI cluster. Currently exposes the simple_chat module's chat loop;
+run via `python -m src.ui.simple_chat`.
+"""

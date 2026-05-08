@@ -106,8 +106,10 @@ def test_document_dataclass_is_frozen() -> None:
 # === ING-01 integration tests ============================================
 
 
-def test_load_corpus_returns_42_documents(corpus_documents) -> None:
-    assert len(corpus_documents) == 42
+def test_load_corpus_returns_16_documents(corpus_documents) -> None:
+    # Pass 2 cleanup dropped the 26 ICO operational entries from the manifest;
+    # 16 = 10 REG + 1 DEP + 5 DEP_EXTRAS (44 - 26 - 2 PDF metadata entries).
+    assert len(corpus_documents) == 16
 
 
 def test_every_document_has_required_fields_populated(corpus_documents) -> None:
@@ -117,8 +119,9 @@ def test_every_document_has_required_fields_populated(corpus_documents) -> None:
         assert d.file_path and d.sha256_short
 
 
-def test_every_document_has_one_of_four_corpus_tags(corpus_documents) -> None:
-    valid = {"REG", "OPS", "DEP", "DEP_EXTRAS"}
+def test_every_document_has_one_of_three_corpus_tags(corpus_documents) -> None:
+    # OPS bucket dropped in Pass 2 cleanup (ICO operational guidance evicted).
+    valid = {"REG", "DEP", "DEP_EXTRAS"}
     for d in corpus_documents:
         assert d.corpus_tag in valid
 
@@ -127,7 +130,7 @@ def test_corpus_tag_distribution(corpus_documents) -> None:
     counts: dict[str, int] = {}
     for d in corpus_documents:
         counts[d.corpus_tag] = counts.get(d.corpus_tag, 0) + 1
-    assert counts == {"REG": 10, "OPS": 26, "DEP": 1, "DEP_EXTRAS": 5}
+    assert counts == {"REG": 10, "DEP": 1, "DEP_EXTRAS": 5}
 
 
 def test_document_ids_are_unique_across_corpus(corpus_documents) -> None:
@@ -281,11 +284,11 @@ def test_chunk_corpus_per_bucket_distribution_sensible(corpus_chunks) -> None:
     counts: dict[str, int] = {}
     for c in corpus_chunks:
         counts[c.corpus_tag] = counts.get(c.corpus_tag, 0) + 1
-    # Every bucket must produce at least some chunks.
+    # Three buckets after Pass 2 cleanup (OPS dropped along with ICO corpus).
     assert counts.get("REG", 0) >= 10
-    assert counts.get("OPS", 0) >= 50
     assert counts.get("DEP", 0) >= 5
     assert counts.get("DEP_EXTRAS", 0) >= 10
+    assert counts.get("OPS", 0) == 0  # OPS bucket fully evicted
 
 
 def test_no_chunk_straddles_two_articles(corpus_chunks) -> None:

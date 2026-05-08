@@ -275,9 +275,21 @@ def _ensure_retriever() -> _BGERetriever:
 
     cache_file = EMBED_CACHE_DIR / "embeddings.npy"
     if cache_file.exists():
-        print(f"[simplified] Loading cached BGE embeddings from {cache_file}")
-        embeddings = np.load(cache_file)
+        cached = np.load(cache_file)
+        if cached.shape[0] == len(chunks):
+            print(f"[simplified] Loading cached BGE embeddings from {cache_file}")
+            embeddings = cached
+        else:
+            print(
+                f"[simplified] Cache mismatch ({cached.shape[0]} cached vs "
+                f"{len(chunks)} chunks); re-embedding..."
+            )
+            cache_file.unlink()
+            embeddings = None
     else:
+        embeddings = None
+
+    if embeddings is None:
         print(f"[simplified] Embedding {len(chunks)} chunks with BGE (one-time)...")
         t0 = time.time()
         embeddings = bge_model.encode(
