@@ -173,6 +173,75 @@ def _format_chunks(hits) -> str:
     return "\n\n".join(lines)
 
 
+# ───── Retrieval grounding (transparency footer appended to LLM output) ─────
+#
+# We summarise the top-K retrieved chunks with the three statistics taught
+# in the INST0100 class example (mean / max / min — see Task 2 of the class
+# notebook), applied here at chunk level over the top-K pool. We then bin
+# the mean into a verbal confidence label per side and produce a plain-
+# English pattern interpretation. Thresholds are empirically calibrated
+# against the 5-query test set in docs/test-passes/.
+#
+# The labels measure retrieval-pool confidence, not output correctness.
+# Cases where retrieval is confident but the output fails (architectural
+# limits, LLM reasoning errors) are documented in
+# docs/evaluation-findings.md. The footer is a transparency signal, not
+# a correctness oracle.
+
+LABEL_THRESHOLD_STRONG = 0.70    # mean cosine ≥ this → "strong"
+LABEL_THRESHOLD_MODERATE = 0.60  # mean cosine ≥ this → "moderate", below → "weak"
+
+
+def _label(mean_score: float) -> str:
+    """Classify retrieval confidence based on mean cosine across top-K chunks."""
+    if mean_score >= LABEL_THRESHOLD_STRONG:
+        return "strong"
+    if mean_score >= LABEL_THRESHOLD_MODERATE:
+        return "moderate"
+    return "weak"
+
+
+def _pattern(reg_label: str, dep_label: str) -> str:
+    """Map (law confidence, policy confidence) to a plain-English interpretation."""
+    reg_high = reg_label != "weak"
+    dep_high = dep_label != "weak"
+    if reg_high and dep_high:
+        return "well-grounded on both sides."
+    if reg_high and not dep_high:
+        return "policy may be silent on this obligation."
+    if not reg_high and dep_high:
+        return "law side weak — query may not match the law corpus well."
+    return "low confidence on both sides — consider rephrasing the query."
+
+
+def _format_retrieval_grounding(reg_hits: list, dep_hits: list) -> str:
+    """Render the retrieval grounding footer with mean / max / min summary
+    statistics plus verbal confidence labels per side and a pattern
+    interpretation. Appended to the LLM output by analyse().
+    """
+    if not reg_hits or not dep_hits:
+        return ""
+
+    reg_scores = [s for _c, s in reg_hits]
+    dep_scores = [s for _c, s in dep_hits]
+    reg_mean = sum(reg_scores) / len(reg_scores)
+    dep_mean = sum(dep_scores) / len(dep_scores)
+
+    reg_label = _label(reg_mean)
+    dep_label = _label(dep_mean)
+    pattern = _pattern(reg_label, dep_label)
+
+    return (
+        f"\n\n---\n"
+        f"Retrieval grounding (based on BGE cosine across top-{len(reg_scores)} chunks):\n"
+        f"  Law passages:    {reg_label:<8} "
+        f"(mean={reg_mean:.2f}, max={max(reg_scores):.2f}, min={min(reg_scores):.2f})\n"
+        f"  Policy passages: {dep_label:<8} "
+        f"(mean={dep_mean:.2f}, max={max(dep_scores):.2f}, min={min(dep_scores):.2f})\n"
+        f"  Pattern: {pattern}\n"
+    )
+
+
 # ───── Module-level singletons ─────
 # Loaded once per process; subsequent calls reuse the same instances.
 
@@ -287,17 +356,21 @@ def _call_llm(tokenizer, model, user_msg: str) -> str:
 # ───── Public API ─────
 
 def analyse(query: str, *, use_cache: bool = True) -> str:
-    """Run compliance gap analysis on `query`. Returns a 3-section text response.
+    """Run compliance gap analysis on `query`. Returns a 3-section text
+    response with a retrieval-grounding footer appended.
 
     Single LLM call, single retrieval pass:
       1. Retrieve top-5 regulation chunks (corpus_tag == "REG")
       2. Retrieve top-5 deployer chunks (corpus_tag in {"DEP", "DEP_EXTRAS"})
       3. Build user message with rules + question + chunks
       4. Call LLM once
-      5. Return generated text (3-section markdown)
+      5. Append retrieval grounding footer (mean/max/min + label + pattern)
+      6. Return combined text
 
-    Caches LLM responses on (rendered_prompt, model_id) so re-runs of the
-    same query are sub-second.
+    Caches the LLM response (not the footer) on (rendered_prompt, model_id)
+    so re-runs of the same query are sub-second. The footer is recomputed
+    each call from the retrieval scores — both LLM output and footer are
+    deterministic given the same query.
     """
     retriever = _ensure_retriever()
     reg_hits = retriever.retrieve(query, top_k=TOP_K_REG, corpus_filter="REG")
@@ -311,21 +384,21 @@ def analyse(query: str, *, use_cache: bool = True) -> str:
         dep_text=_format_chunks(dep_hits),
     )
 
+    cached_llm_output = None
     if use_cache:
         cache = _ensure_cache()
-        cached = cache.get(user_msg, LLM_MODEL_ID)
-        if cached is not None:
-            print("[simplified] Cache hit")
-            return cached
+        cached_llm_output = cache.get(user_msg, LLM_MODEL_ID)
 
-    tokenizer, model = _ensure_llm()
-    print("[simplified] Generating response...")
-    t0 = time.time()
-    output = _call_llm(tokenizer, model, user_msg)
-    print(f"[simplified]   generated in {time.time()-t0:.1f}s")
+    if cached_llm_output is not None:
+        print("[simplified] Cache hit")
+        llm_output = cached_llm_output
+    else:
+        tokenizer, model = _ensure_llm()
+        print("[simplified] Generating response...")
+        t0 = time.time()
+        llm_output = _call_llm(tokenizer, model, user_msg)
+        print(f"[simplified]   generated in {time.time()-t0:.1f}s")
+        if use_cache:
+            cache.set(user_msg, LLM_MODEL_ID, llm_output)
 
-    if use_cache:
-        cache = _ensure_cache()
-        cache.set(user_msg, LLM_MODEL_ID, output)
-
-    return output
+    return llm_output + _format_retrieval_grounding(reg_hits, dep_hits)
